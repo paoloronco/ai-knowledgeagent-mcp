@@ -2,7 +2,11 @@
 
 ## Docker container exits immediately or the Web UI is unreachable
 
-Run `docker compose up -d` from the repository root. A bare `docker run` does not publish port 8080 or start Qdrant. Check `docker compose ps` and `docker compose logs app`. The Web UI is available at `http://127.0.0.1:8080` on the Docker host. To open it from another computer, use a secure port forward or authenticated proxy.
+Use the complete `docker run` command in the root README, including port and volume flags. Check `docker ps -a` and `docker logs knowledge-mcp`. With Compose, check `docker compose ps` and `docker compose logs app`. The Web UI is available at `http://127.0.0.1:8080` on the Docker host. To open it from another computer, use a secure port forward or authenticated proxy.
+
+## Docker prints localized progress messages
+
+The Docker client prints its own container creation and pull messages using its host settings. These messages are outside the application. On Linux, run a command with `LC_ALL=C` if you want to request English output from the Docker client, for example `LC_ALL=C docker compose up -d`.
 
 ## ImportError: MCPServer
 

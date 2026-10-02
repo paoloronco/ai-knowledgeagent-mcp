@@ -38,12 +38,14 @@ jobs:
           file: ./knowledge-mcp/Dockerfile
           load: true
           tags: knowledge-mcp:smoke
-      - name: Verify Web UI starts without mounts
+      - name: Verify standalone Web UI and Qdrant
         run: |
           docker run -d --name knowledge-smoke -p 127.0.0.1:18080:8080 knowledge-mcp:smoke
           trap 'docker rm -f knowledge-smoke >/dev/null 2>&1 || true' EXIT
-          for i in {1..20}; do
-            if curl -fsS http://127.0.0.1:18080/ | grep -q 'Local document indexing'; then
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:18080/ 2>/dev/null | grep -q 'Local document indexing' \
+              && curl -fsS http://127.0.0.1:18080/api/status 2>/dev/null \
+                | python -c 'import json, sys; status = json.load(sys.stdin); sys.exit(not (status["qdrant_ready"] and status["mcp_running"]))' 2>/dev/null; then
               exit 0
             fi
             sleep 1

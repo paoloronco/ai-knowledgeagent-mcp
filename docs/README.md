@@ -5,5 +5,6 @@
 - [Security model](security-model.md): trust boundaries and limitations
 - [Cloudflare Access](cloudflare-access.md): protected remote access
 - [Troubleshooting](troubleshooting.md): operational checks
+- [Docker deployment](docker.md): host mounts and migration from the older Compose stack
 - [Linux deployment](../knowledge-mcp/mcp/deployment/README.md): service example
 - [AI integrations](../AI/README.md): remote clients and ADK

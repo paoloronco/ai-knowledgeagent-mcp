@@ -1,17 +1,8 @@
 services:
-  qdrant:
-    image: qdrant/qdrant:v1.19.1
-    restart: unless-stopped
-    volumes:
-      - qdrant_data:/qdrant/storage
-
   app:
     image: paoloronco/knowledge-mcp:latest
     restart: unless-stopped
-    depends_on:
-      - qdrant
     environment:
-      QDRANT_URL: http://qdrant:6333
       KNOWLEDGE_ROOT: /data/documents
       INGESTION_BASE_DIR: /data/ingestion
       POLICY_FILE: /data/index-policy.yaml
@@ -21,6 +12,7 @@ services:
       - "127.0.0.1:${MCP_PORT:-8000}:8000"
     volumes:
       - app_data:/data
+      - qdrant_data:/qdrant/storage
 
 volumes:
   qdrant_data:
