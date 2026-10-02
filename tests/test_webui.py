@@ -16,6 +16,23 @@ import webui as app
 
 
 class AdminBoundaryTest(unittest.TestCase):
+    def test_managed_source_is_created_on_first_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            source = data / "documents"
+            (data / "config.json").write_text(json.dumps({"mcp_enabled": False}), encoding="utf-8")
+            with (
+                patch.object(app, "DATA", data),
+                patch.object(app, "MANAGED_SOURCE", source),
+                patch.object(app, "SOURCE", source),
+                patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "POLICY", data / "index-policy.yaml"),
+            ):
+                controller = app.Controller()
+                self.assertTrue(source.is_dir())
+                self.assertEqual(app.source_dir(""), source)
+                controller.close()
+
     def test_source_and_policy_cannot_escape_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source"
@@ -44,6 +61,7 @@ class AdminBoundaryTest(unittest.TestCase):
                 patch.object(app, "CONFIG", data / "config.json"),
                 patch.object(app, "POLICY", data / "index-policy.yaml"),
                 patch.object(app, "SOURCE", source),
+                patch.object(app, "MANAGED_SOURCE", source),
             ):
                 controller = app.Controller()
                 with patch.object(app, "controller", controller):
@@ -61,6 +79,15 @@ class AdminBoundaryTest(unittest.TestCase):
                         request.add_header("X-Control-Token", app.TOKEN)
                         with urllib.request.urlopen(request) as response:
                             self.assertEqual(response.status, 200)
+                        upload = urllib.request.Request(url + "/api/upload?path=notes%2Fexample.md", data=b"Example document", headers={"X-Control-Token": app.TOKEN})
+                        with urllib.request.urlopen(upload) as response:
+                            self.assertEqual(response.status, 200)
+                        self.assertEqual((source / "notes" / "example.md").read_bytes(), b"Example document")
+                        for path in ("..%2Fescape.md", "sample-folder%2Fprivate.md", "notes%2Fsecret.pem"):
+                            denied_upload = urllib.request.Request(url + "/api/upload?path=" + path, data=b"secret", headers={"X-Control-Token": app.TOKEN})
+                            with self.assertRaises(urllib.error.HTTPError) as denied:
+                                urllib.request.urlopen(denied_upload)
+                            self.assertEqual(denied.exception.code, 400)
                     finally:
                         server.shutdown()
                         server.server_close()

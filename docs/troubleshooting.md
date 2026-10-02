@@ -1,5 +1,9 @@
 # Troubleshooting
 
+## Docker container exits immediately or the Web UI is unreachable
+
+Run `docker compose up -d` from the repository root. A bare `docker run` does not publish port 8080 or start Qdrant. Check `docker compose ps` and `docker compose logs app`. The Web UI is available at `http://127.0.0.1:8080` on the Docker host. To open it from another computer, use a secure port forward or authenticated proxy.
+
 ## ImportError: MCPServer
 
 Install the declared dependencies in the active virtual environment: python -m pip install -r knowledge-mcp/requirements.txt. The server uses the MCP Python SDK 2.x import path mcp.server.mcpserver.

@@ -85,7 +85,11 @@ class CoreFlowTest(unittest.TestCase):
                 ingest.main()
                 self.assertEqual(len(json.loads(state_file.read_text(encoding="utf-8"))["documents"]), 1)
                 source.unlink()
-                ingest.main()
+                with self.assertRaises(SystemExit):
+                    ingest.main()
+                self.assertGreater(client.count(ingest.COLLECTION_NAME).count, 0)
+                with patch.object(sys, "argv", ["ingest.py", "--allow-empty"]):
+                    ingest.main()
                 self.assertEqual(client.count(ingest.COLLECTION_NAME).count, 0)
 
 

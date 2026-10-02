@@ -1,22 +1,26 @@
 import json
+import math
 import os
 import secrets
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path("/data")
-SOURCE = Path("/knowledge").resolve()
+MANAGED_SOURCE = DATA / "documents"
+SOURCE = Path(os.getenv("KNOWLEDGE_ROOT", str(MANAGED_SOURCE))).resolve()
 CONFIG = DATA / "config.json"
 POLICY = DATA / "index-policy.yaml"
 DEFAULT_POLICY = ROOT / "mcp" / "index-policy.yaml"
@@ -26,10 +30,10 @@ TOKEN = secrets.token_urlsafe(32)
 
 def source_dir(subfolder):
     if not isinstance(subfolder, str) or "\\" in subfolder:
-        raise ValueError("Cartella non valida")
+        raise ValueError("Invalid folder")
     path = (SOURCE / subfolder).resolve()
     if not path.is_relative_to(SOURCE) or not path.is_dir():
-        raise ValueError("Scegli una cartella esistente dentro il percorso montato")
+        raise ValueError("Choose an existing folder in the document library")
     return path
 
 
@@ -37,24 +41,26 @@ def validate_policy(content):
     policy = yaml.safe_load(content)
     default = yaml.safe_load(DEFAULT_POLICY.read_text(encoding="utf-8"))
     if not isinstance(policy, dict):
-        raise ValueError("La policy deve essere un oggetto YAML")
+        raise ValueError("Policy must be a YAML object")
     for key in ("exclude_directories", "exclude_top_level", "exclude_extensions"):
         actual = policy.get(key)
         if not isinstance(actual, list) or not all(isinstance(x, str) for x in actual):
-            raise ValueError(f"{key} deve essere un elenco")
+            raise ValueError(f"{key} must be a list")
         required = set(default[key]) if key == "exclude_extensions" else {x.casefold() for x in default[key]}
         present = set(actual) if key == "exclude_extensions" else {x.casefold() for x in actual}
         if not required <= present:
-            raise ValueError(f"Non rimuovere le esclusioni predefinite da {key}")
+            raise ValueError(f"Do not remove the default exclusions from {key}")
     if not isinstance(policy.get("include_extensions"), list) or not all(isinstance(x, str) for x in policy["include_extensions"]):
-        raise ValueError("include_extensions deve essere un elenco")
-    if type(policy.get("max_file_size_mb")) not in (int, float) or policy["max_file_size_mb"] <= 0:
-        raise ValueError("max_file_size_mb deve essere un numero positivo")
+        raise ValueError("include_extensions must be a list")
+    if type(policy.get("max_file_size_mb")) not in (int, float) or not math.isfinite(policy["max_file_size_mb"]) or policy["max_file_size_mb"] <= 0:
+        raise ValueError("max_file_size_mb must be a positive number")
 
 
 class Controller:
     def __init__(self):
         DATA.mkdir(parents=True, exist_ok=True)
+        if SOURCE == MANAGED_SOURCE:
+            SOURCE.mkdir(parents=True, exist_ok=True)
         if not POLICY.exists():
             shutil.copyfile(DEFAULT_POLICY, POLICY)
         self.lock = threading.RLock()
@@ -79,7 +85,7 @@ class Controller:
         tmp.replace(CONFIG)
 
     def _env(self):
-        return {**os.environ, "KNOWLEDGE_ROOT": str(source_dir(self.config["subfolder"])), "POLICY_FILE": str(POLICY)}
+        return {**os.environ, "KNOWLEDGE_ROOT": str(SOURCE / self.config["subfolder"]), "POLICY_FILE": str(POLICY)}
 
     def _start_mcp(self):
         if self.mcp and self.mcp.poll() is None:
@@ -102,10 +108,10 @@ class Controller:
         source_dir(subfolder)
         interval = values.get("interval_hours", self.config["interval_hours"])
         if type(interval) is not int or not 0 <= interval <= 720:
-            raise ValueError("L'intervallo deve essere tra 0 e 720 ore")
+            raise ValueError("Interval must be between 0 and 720 hours")
         enabled = values.get("mcp_enabled", self.config["mcp_enabled"])
         if type(enabled) is not bool:
-            raise ValueError("Stato MCP non valido")
+            raise ValueError("Invalid MCP state")
         with self.lock:
             root_changed = subfolder != self.config["subfolder"]
             interval_changed = interval != self.config["interval_hours"]
@@ -122,7 +128,8 @@ class Controller:
     def run_index(self, dry_run=False):
         with self.lock:
             if self.ingest and self.ingest.poll() is None:
-                raise ValueError("Indicizzazione già in corso")
+                raise ValueError("Indexing is already running")
+            source_dir(self.config["subfolder"])
             args = [sys.executable, "ingestion/ingest.py"]
             if dry_run:
                 args += ["--dry-run", "--limit", "10"]
@@ -132,6 +139,48 @@ class Controller:
                 self.config["last_run_at"] = time.time()
                 self._save()
             threading.Thread(target=self._finish_index, args=(self.ingest, dry_run), daemon=True).start()
+
+    def upload_file(self, relative_path, length, stream):
+        if SOURCE != MANAGED_SOURCE:
+            raise ValueError("Uploads are unavailable for a mounted document folder")
+        if not isinstance(relative_path, str) or not 0 < len(relative_path) <= 1024 or "\\" in relative_path or any(ord(char) < 32 for char in relative_path):
+            raise ValueError("Invalid file path")
+        parts = relative_path.split("/")
+        if any(part in ("", ".", "..") for part in parts) or PurePosixPath(relative_path).is_absolute():
+            raise ValueError("Invalid file path")
+        policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+        excluded_top = {name.casefold() for name in policy["exclude_top_level"]}
+        excluded_dirs = {name.casefold() for name in policy["exclude_directories"]}
+        extension = Path(parts[-1]).suffix.lower()
+        if parts[0].casefold() in excluded_top or any(part.casefold() in excluded_dirs for part in parts[:-1]):
+            raise ValueError("This folder is excluded by the indexing policy")
+        if extension not in policy["include_extensions"] or extension in policy["exclude_extensions"]:
+            raise ValueError("This file type is excluded by the indexing policy")
+        if not 0 < length <= policy["max_file_size_mb"] * 1024 * 1024:
+            raise ValueError("File is empty or exceeds the policy size limit")
+        target = SOURCE.joinpath(*parts)
+        if not target.resolve().is_relative_to(SOURCE):
+            raise ValueError("Invalid file path")
+        with self.lock:
+            if self.ingest and self.ingest.poll() is None:
+                raise ValueError("Wait until indexing finishes before uploading files")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
+                    temporary = Path(output.name)
+                    remaining = length
+                    while remaining:
+                        chunk = stream.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError("Upload ended before the complete file arrived")
+                        output.write(chunk)
+                        remaining -= len(chunk)
+                temporary.replace(target)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        return {"saved": relative_path}
 
     def _finish_index(self, process, dry_run):
         code = process.wait()
@@ -175,6 +224,8 @@ class Controller:
                 "qdrant_ready": qdrant,
                 "mcp_running": bool(self.mcp and self.mcp.poll() is None),
                 "index_running": bool(self.ingest and self.ingest.poll() is None),
+                "source_ready": SOURCE.is_dir(),
+                "upload_enabled": SOURCE == MANAGED_SOURCE,
                 "last_result": self.last_result,
                 "log": tail,
             }
@@ -205,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if not self._local_host():
-            self.send(403, json.dumps({"error": "Host non consentito"}))
+            self.send(403, json.dumps({"error": "Host not allowed"}))
             return
         if self.path == "/":
             self.send(200, HTML.read_text(encoding="utf-8").replace("__TOKEN__", TOKEN), "text/html; charset=utf-8")
@@ -214,19 +265,26 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/policy":
             self.send(200, json.dumps({"content": POLICY.read_text(encoding="utf-8")}))
         else:
-            self.send(404, json.dumps({"error": "Non trovato"}))
+            self.send(404, json.dumps({"error": "Not found"}))
 
     def do_POST(self):
         if not self._local_host() or self.headers.get("X-Control-Token") != TOKEN:
-            self.send(403, json.dumps({"error": "Richiesta non autorizzata"}))
+            self.send(403, json.dumps({"error": "Unauthorized request"}))
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            route = urlsplit(self.path)
+            if route.path == "/api/upload":
+                paths = parse_qs(route.query).get("path", [])
+                if len(paths) != 1:
+                    raise ValueError("Provide one relative file path")
+                self.send(200, json.dumps(controller.upload_file(paths[0], length, self.rfile)))
+                return
             if not 0 < length <= 65536:
-                raise ValueError("Richiesta troppo grande o vuota")
+                raise ValueError("Request is too large or empty")
             values = json.loads(self.rfile.read(length))
             if not isinstance(values, dict):
-                raise ValueError("Dati non validi")
+                raise ValueError("Invalid data")
             if self.path == "/api/config":
                 result = controller.update(values)
             elif self.path == "/api/index":
@@ -235,20 +293,20 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/policy":
                 content = values.get("content")
                 if not isinstance(content, str):
-                    raise ValueError("Policy non valida")
+                    raise ValueError("Invalid policy")
                 validate_policy(content)
                 tmp = POLICY.with_suffix(".tmp")
                 tmp.write_text(content, encoding="utf-8")
                 tmp.replace(POLICY)
                 result = {"saved": True}
             else:
-                self.send(404, json.dumps({"error": "Non trovato"}))
+                self.send(404, json.dumps({"error": "Not found"}))
                 return
             self.send(200, json.dumps(result))
         except (ValueError, yaml.YAMLError) as exc:
             self.send(400, json.dumps({"error": str(exc)}))
         except Exception:
-            self.send(500, json.dumps({"error": "Errore interno; controlla i log del container"}))
+            self.send(500, json.dumps({"error": "Internal error; check the container logs"}))
             raise
 
 

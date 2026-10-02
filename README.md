@@ -1,40 +1,46 @@
 # Knowledge MCP
 
-Indicizza i documenti di una cartella e li rende ricercabili tramite un server MCP. L'app gira con Docker insieme a Qdrant e si gestisce da una WebUI locale. I documenti restano sul tuo computer: il container li monta in sola lettura.
+Search your documents through an MCP server. Docker Compose runs the app and Qdrant; the local Web UI handles document uploads, indexing, policy changes, scheduling, and MCP on/off control. No local Python installation is needed.
 
-## Avvio con Docker
+## Start with Docker
 
-Serve Docker con il plugin Compose e una cartella già esistente che contiene i documenti.
+Install Docker with Compose, then run these commands from a terminal:
 
-1. Scarica il repository e apri la sua cartella:
+```bash
+git clone https://github.com/paoloronco/ai-knowledgeagent-mcp.git
+cd ai-knowledgeagent-mcp
+docker pull paoloronco/knowledge-mcp:latest
+docker compose up -d
+```
 
-   ```bash
-   git clone https://github.com/paoloronco/ai-knowledgeagent-mcp.git
-   cd ai-knowledgeagent-mcp
-   ```
+Open **http://127.0.0.1:8080**. Select a folder or files in the Web UI, upload them, review the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), and start a ten-document test or a full index. Uploaded files, indexing state, model cache, and Qdrant data persist in Docker volumes. The MCP endpoint is **http://127.0.0.1:8000/mcp** when enabled; use an MCP client, not a browser page, to call it.
 
-2. Crea un file `.env` nella stessa cartella di `compose.yaml`, indicando il percorso **assoluto** dei documenti:
+`docker run paoloronco/knowledge-mcp` by itself does not start Qdrant or publish the Web UI port. Use the Compose command above for the complete app. If Docker runs on another machine, forward port 8080 securely to your computer; the Web UI has no built-in login. Both app ports are bound to localhost by default.
 
-   ```dotenv
-   KNOWLEDGE_HOST_PATH=/home/utente/Documenti
-   ```
+### Use an existing host folder instead of uploading
 
-   Su Windows usa, per esempio, `KNOWLEDGE_HOST_PATH=C:/Users/Paolo/Documents`. Il percorso deve esistere prima dell'avvio.
+For a large collection already on the Docker host, create `compose.override.yaml` beside `compose.yaml`:
 
-3. Scarica l'immagine pubblica e avvia l'app:
+```yaml
+services:
+  app:
+    environment:
+      KNOWLEDGE_ROOT: /knowledge
+    volumes:
+      - type: bind
+        source: /absolute/path/to/documents
+        target: /knowledge
+        read_only: true
+        bind:
+          create_host_path: false
+```
 
-   ```bash
-   docker pull paoloronco/knowledge-mcp:latest
-   docker compose up -d
-   ```
+Replace `source` with an existing absolute host path, then run `docker compose up -d`. The Web UI can choose a subfolder within this mount; browser uploads are disabled in this mode. On Windows, use a path such as `C:/Users/Name/Documents`.
 
-Apri la **WebUI** su [http://127.0.0.1:8080](http://127.0.0.1:8080). Da lì puoi provare l'indicizzazione su 10 documenti, avviare quella completa, modificare la policy, scegliere una sottocartella, programmare gli aggiornamenti e accendere o spegnere il server MCP. Prima di indicizzare, controlla la [policy predefinita](knowledge-mcp/mcp/index-policy.yaml): alcune cartelle riservate sono sempre escluse.
+Compose starts its own Qdrant volume. It does **not** import data from a separately running Qdrant container. Keep your previous Qdrant volume and ingestion state until you have verified a migration.
+If upgrading from the earlier Compose setup that used `KNOWLEDGE_HOST_PATH`, add the read-only mount above for that same folder before running a full index. The new default library starts empty, and a full index removes previously indexed documents that are absent from the selected source.
 
-Quando è attivo, l'endpoint MCP è `http://127.0.0.1:8000/mcp`. È un endpoint per client MCP, non una pagina da aprire nel browser.
-
-## Aggiornamento e dati
-
-Per scaricare una nuova versione:
+## Update or stop
 
 ```bash
 git pull
@@ -42,15 +48,13 @@ docker pull paoloronco/knowledge-mcp:latest
 docker compose up -d
 ```
 
-Qdrant, stato dell'indicizzazione, policy e cache del modello sono conservati in volumi Docker. `docker compose down` ferma l'app senza cancellarli; **`docker compose down -v` li elimina**, incluso l'indice già creato. La cartella dei documenti è montata in sola lettura e non viene cancellata da questi comandi. Per cambiarla, modifica `KNOWLEDGE_HOST_PATH` nel file `.env` e riavvia con `docker compose up -d`.
+`docker compose down` stops the stack and keeps its volumes. **`docker compose down -v` deletes them**, including uploaded documents and the index. For remote access, put an authenticated proxy in front of the Web UI and MCP server; see the [security guide](docs/security-model.md).
 
-WebUI e MCP sono esposti solo su localhost e non hanno un login integrato. Per usarli da remoto serve un proxy autenticato; vedi la [guida alla sicurezza](docs/security-model.md). Qdrant non è esposto all'host.
+## More information
 
-## Codice e documentazione
+- [Service and manual Python setup](knowledge-mcp/README.md)
+- [Architecture and troubleshooting](docs/README.md)
+- [AI client examples](AI/README.md)
+- [Docker Hub publishing workflow](.github/workflows/docker.yml)
 
-- [Servizio, ingestion e avvio manuale con Python](knowledge-mcp/README.md)
-- [Architettura e comportamento della ricerca](docs/README.md)
-- [Esempi di integrazione con client AI](AI/README.md)
-- [Workflow che pubblica l'immagine su Docker Hub](.github/workflows/docker.yml)
-
-Questo repository non contiene documenti privati, credenziali o dati Qdrant. Non ha ancora un file LICENSE.
+This repository contains no private documents, credentials, or Qdrant data. It does not yet have a LICENSE file.

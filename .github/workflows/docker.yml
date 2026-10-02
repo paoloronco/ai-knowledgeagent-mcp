@@ -29,7 +29,27 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r knowledge-mcp/requirements.txt
           python -m unittest discover -s tests -q
+          docker compose config --quiet
       - uses: docker/setup-buildx-action@v4
+      - name: Build for startup test
+        uses: docker/build-push-action@v7
+        with:
+          context: ./knowledge-mcp
+          file: ./knowledge-mcp/Dockerfile
+          load: true
+          tags: knowledge-mcp:smoke
+      - name: Verify Web UI starts without mounts
+        run: |
+          docker run -d --name knowledge-smoke -p 127.0.0.1:18080:8080 knowledge-mcp:smoke
+          trap 'docker rm -f knowledge-smoke >/dev/null 2>&1 || true' EXIT
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:18080/ | grep -q 'Local document indexing'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs knowledge-smoke
+          exit 1
       - uses: docker/metadata-action@v6
         id: meta
         with:

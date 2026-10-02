@@ -12,7 +12,7 @@ services:
       - qdrant
     environment:
       QDRANT_URL: http://qdrant:6333
-      KNOWLEDGE_ROOT: /knowledge
+      KNOWLEDGE_ROOT: /data/documents
       INGESTION_BASE_DIR: /data/ingestion
       POLICY_FILE: /data/index-policy.yaml
       MCP_HOST: 0.0.0.0
@@ -20,12 +20,6 @@ services:
       - "127.0.0.1:${UI_PORT:-8080}:8080"
       - "127.0.0.1:${MCP_PORT:-8000}:8000"
     volumes:
-      - type: bind
-        source: ${KNOWLEDGE_HOST_PATH:?Set KNOWLEDGE_HOST_PATH to an existing directory}
-        target: /knowledge
-        read_only: true
-        bind:
-          create_host_path: false
       - app_data:/data
 
 volumes:

@@ -419,6 +419,11 @@ def main():
         default=None,
         help="Process only the first N unique documents.",
     )
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="Allow an empty source to remove all indexed documents.",
+    )
 
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
@@ -436,6 +441,8 @@ def main():
     candidates = discover_documents(policy)
 
     print(f"Candidates found: {len(candidates)}")
+    if not candidates and not args.dry_run and not args.allow_empty:
+        raise SystemExit("No eligible documents found; the index was not changed. Use --allow-empty to clear it intentionally.")
 
     # -------------------------------------------------------------
     # Deduplication
