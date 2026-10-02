@@ -39,7 +39,9 @@ jobs:
             type=ref,event=tag
             type=sha
       - uses: docker/login-action@v4
+        id: login
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -47,6 +49,11 @@ jobs:
         with:
           context: ./knowledge-mcp
           file: ./knowledge-mcp/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' && steps.login.outcome == 'success' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      - name: Require Docker Hub login
+        if: github.event_name != 'pull_request' && steps.login.outcome != 'success'
+        run: |
+          echo '::error::Docker Hub login failed; verify DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.'
+          exit 1
