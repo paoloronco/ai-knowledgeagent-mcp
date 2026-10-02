@@ -14,6 +14,22 @@ There is currently no LICENSE file. Choose a license before making the repositor
 
 ## Quick start
 
+### Docker (Windows)
+
+Install and start Docker Desktop, then run this once from the repository root:
+
+~~~powershell
+.\start.ps1
+~~~
+
+On first launch, enter an existing host directory containing documents. The script builds and starts the application and Qdrant with Docker Compose. Open the control UI at http://127.0.0.1:8080. It can run a ten-document dry run, index the collection, edit the indexing policy, choose a subfolder of the mounted directory, schedule repeated incremental runs, and enable or disable the MCP server. The MCP endpoint is http://127.0.0.1:8000/mcp while enabled. Both published ports listen only on localhost; Qdrant is not published to the host.
+
+Docker must know the host directory before starting the container. To change it later, edit `KNOWLEDGE_HOST_PATH` in the root `.env` file and run `.\start.ps1` again. The directory is mounted read-only. The UI cannot select a host directory outside that mount. The first full index downloads the embedding model; Qdrant, model cache, policy, and ingestion state persist in Docker volumes. Review the default [index policy](knowledge-mcp/mcp/index-policy.yaml) before indexing. The UI keeps its default exclusions in place.
+
+On Linux or macOS, set `KNOWLEDGE_HOST_PATH` to an existing directory and run `docker compose up --build -d`. Use `docker compose down` to stop the stack without removing its volumes. Remote access still requires an authenticated proxy; the web UI and MCP server do not provide HTTP login.
+
+### Manual Python setup
+
 Use Python 3.10+ and a local Qdrant instance listening on 127.0.0.1:6333. From the repository root:
 
 ~~~bash
@@ -25,6 +41,8 @@ cp .env.example .env
 ~~~
 
 Edit .env: set KNOWLEDGE_ROOT to an existing document directory. Review [index-policy.yaml](knowledge-mcp/mcp/index-policy.yaml) before indexing any private data. The default server bind address is localhost; configure an authenticated reverse proxy before making it reachable remotely.
+
+When running Python directly inside a VM or container, `127.0.0.1` accepts connections only from that VM or container. If an authenticated proxy needs to reach the server over its network interface, set `MCP_HOST=0.0.0.0` in `knowledge-mcp/.env` and restart it. For a temporary connectivity check, run `MCP_HOST=0.0.0.0 python mcp/server.py`. The `/mcp` URL is a Streamable HTTP protocol endpoint, not a browser page; verify it with an MCP client. Do not expose this unauthenticated port directly to the network.
 
 ~~~bash
 python ingestion/ingest.py --dry-run --limit 10

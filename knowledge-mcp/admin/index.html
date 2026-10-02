@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge MCP</title>
+<style>
+  body{font:16px system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#1c2530;background:#f5f7fa}
+  h1{margin-bottom:4px} p{line-height:1.5} section{background:white;padding:20px;margin:20px 0;border-radius:10px;box-shadow:0 1px 5px #d8dce2}
+  label{display:block;margin:12px 0 5px} input[type=text],input[type=number],textarea{box-sizing:border-box;width:100%;padding:9px;border:1px solid #aeb8c5;border-radius:5px;font:inherit}
+  textarea{height:260px;font:13px ui-monospace,monospace} button{padding:9px 15px;margin:10px 8px 0 0;border:0;border-radius:5px;background:#1764ac;color:white;font:inherit;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default} pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#151e29;color:#e2e8f0;padding:15px;max-height:360px;overflow:auto;border-radius:5px}
+  .hint{color:#536273;font-size:14px} #message{min-height:24px;font-weight:600} .row{display:flex;gap:20px;flex-wrap:wrap}.row>*{flex:1;min-width:230px}
+</style>
+<h1>Knowledge MCP</h1>
+<p class="hint">Gestione locale dell'indice e del server MCP</p>
+<p id="message" role="status" aria-live="polite"></p>
+
+<section>
+  <h2>Stato</h2>
+  <p id="status">Caricamento…</p>
+  <button id="dry" onclick="runIndex(true)">Prova 10 documenti</button>
+  <button id="run" onclick="runIndex(false)">Avvia indicizzazione</button>
+  <p class="hint">L'indicizzazione completa aggiorna solo i documenti cambiati e rimuove quelli non più presenti. Al termine il server MCP viene riavviato.</p>
+  <pre id="log" aria-label="Log indicizzazione"></pre>
+</section>
+
+<section>
+  <h2>Impostazioni</h2>
+  <label for="subfolder">Sottocartella dei documenti</label>
+  <input id="subfolder" type="text" placeholder="Vuoto = tutta la cartella montata">
+  <p class="hint">Puoi scegliere solo una sottocartella del percorso montato al primo avvio. Per cambiare il percorso sul computer, aggiorna il mount Docker e riavvia.</p>
+  <div class="row">
+    <div><label for="interval">Indicizzazione automatica ogni N ore (0 = disattivata)</label><input id="interval" type="number" min="0" max="720" step="1"></div>
+    <div><label for="enabled">Server MCP</label><input id="enabled" type="checkbox"> Attivo</div>
+  </div>
+  <button onclick="saveConfig()">Salva impostazioni</button>
+</section>
+
+<section>
+  <h2>Policy di indicizzazione</h2>
+  <p class="hint">Le esclusioni predefinite, incluse le cartelle riservate, non possono essere rimosse.</p>
+  <textarea id="policy" spellcheck="false" aria-label="Policy YAML"></textarea>
+  <button onclick="savePolicy()">Salva policy</button>
+  <p class="hint">Le modifiche si applicano alla prossima indicizzazione.</p>
+</section>
+
+<script>
+const token = '__TOKEN__';
+const $ = id => document.getElementById(id);
+let editing = false;
+async function api(path, data) {
+  const options = data === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify(data)};
+  const response = await fetch(path, options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || 'Errore');
+  return body;
+}
+function message(value, error=false) { $('message').textContent=value; $('message').style.color=error?'#ad2020':'#176436'; }
+async function refresh() {
+  try {
+    const s = await api('/api/status');
+    $('status').textContent = `Qdrant: ${s.qdrant_ready?'pronto':'non disponibile'} · MCP: ${s.mcp_running?'attivo':'spento'} · Indicizzazione: ${s.index_running?'in corso':'ferma'}`;
+    $('log').textContent = s.log || 'Nessuna indicizzazione avviata.';
+    $('dry').disabled = s.index_running;
+    $('run').disabled = s.index_running || !s.qdrant_ready;
+    if (!editing) {
+      $('subfolder').value=s.config.subfolder;
+      $('interval').value=s.config.interval_hours;
+      $('enabled').checked=s.config.mcp_enabled;
+    }
+  } catch(e) { message(e.message,true); }
+}
+async function runIndex(dry_run) {
+  try { await api('/api/index',{dry_run}); message(dry_run?'Prova avviata.':'Indicizzazione avviata.'); await refresh(); }
+  catch(e) { message(e.message,true); }
+}
+async function saveConfig() {
+  try {
+    await api('/api/config',{subfolder:$('subfolder').value,interval_hours:Number($('interval').value),mcp_enabled:$('enabled').checked});
+    editing=false; message('Impostazioni salvate.'); await refresh();
+  } catch(e) { message(e.message,true); }
+}
+async function savePolicy() {
+  try { await api('/api/policy',{content:$('policy').value}); message('Policy salvata.'); }
+  catch(e) { message(e.message,true); }
+}
+for (const id of ['subfolder','interval','enabled']) $(id).addEventListener('input',()=>editing=true);
+api('/api/policy').then(x=>$('policy').value=x.content).catch(e=>message(e.message,true));
+refresh(); setInterval(refresh,3000);
+</script>
+</html>

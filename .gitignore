@@ -249,5 +249,6 @@ deployment-scripts/
 # =============================================================================
 
 .dockerignore
+!knowledge-mcp/.dockerignore
 Dockerfile.local
 docker-compose.override.yml
