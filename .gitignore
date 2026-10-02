@@ -240,7 +240,6 @@ vector-db/
 
 # Generated deployment files
 *.sh
-!/start.sh
 *.bat
 deploy-scripts/
 deployment-scripts/

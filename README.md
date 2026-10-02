@@ -1,77 +1,56 @@
 # Knowledge MCP
 
-An MCP server for searching a private document collection. Ingestion parses local files, builds multilingual dense embeddings in Qdrant, and keeps source paths and page/section metadata. Search combines Qdrant dense retrieval with lexical scoring over a local copy of the indexed payloads. The server returns selected text to its MCP client after output redaction.
+Indicizza i documenti di una cartella e li rende ricercabili tramite un server MCP. L'app gira con Docker insieme a Qdrant e si gestisce da una WebUI locale. I documenti restano sul tuo computer: il container li monta in sola lettura.
 
-This repository is a portable version of a personal homelab project. It does not include the private documents, Qdrant data, credentials, or a running Cloudflare configuration.
+## Avvio con Docker
 
-There is currently no LICENSE file. Choose a license before making the repository public.
+Serve Docker con il plugin Compose e una cartella già esistente che contiene i documenti.
 
-## Repository layout
+1. Scarica il repository e apri la sua cartella:
 
-- [knowledge-mcp/](knowledge-mcp/README.md): server, ingestion, dependencies and policy
-- [docs/](docs/README.md): architecture, retrieval, security and troubleshooting
-- [AI/](AI/README.md): Cloudflare, ChatGPT, Claude and Google ADK notes
+   ```bash
+   git clone https://github.com/paoloronco/ai-knowledgeagent-mcp.git
+   cd ai-knowledgeagent-mcp
+   ```
 
-## Quick start
+2. Crea un file `.env` nella stessa cartella di `compose.yaml`, indicando il percorso **assoluto** dei documenti:
 
-### Docker
+   ```dotenv
+   KNOWLEDGE_HOST_PATH=/home/utente/Documenti
+   ```
 
-Install and start Docker, clone this repository, then run from its root. Windows PowerShell:
+   Su Windows usa, per esempio, `KNOWLEDGE_HOST_PATH=C:/Users/Paolo/Documents`. Il percorso deve esistere prima dell'avvio.
 
-~~~powershell
-.\start.ps1
-~~~
+3. Scarica l'immagine pubblica e avvia l'app:
 
-Linux or macOS:
+   ```bash
+   docker pull paoloronco/knowledge-mcp:latest
+   docker compose up -d
+   ```
 
-~~~bash
-bash start.sh
-~~~
+Apri la **WebUI** su [http://127.0.0.1:8080](http://127.0.0.1:8080). Da lì puoi provare l'indicizzazione su 10 documenti, avviare quella completa, modificare la policy, scegliere una sottocartella, programmare gli aggiornamenti e accendere o spegnere il server MCP. Prima di indicizzare, controlla la [policy predefinita](knowledge-mcp/mcp/index-policy.yaml): alcune cartelle riservate sono sempre escluse.
 
-On first launch, enter an existing host directory containing documents. The script downloads the public [Docker Hub image](https://hub.docker.com/r/paoloronco/knowledge-mcp) and starts the application and Qdrant with Docker Compose; no local Python installation or image build is needed. Open the control UI at http://127.0.0.1:8080. It can run a ten-document dry run, index the collection, edit the indexing policy, choose a subfolder of the mounted directory, schedule repeated incremental runs, and enable or disable the MCP server. The MCP endpoint is http://127.0.0.1:8000/mcp while enabled. Both published ports listen only on localhost; Qdrant is not published to the host.
+Quando è attivo, l'endpoint MCP è `http://127.0.0.1:8000/mcp`. È un endpoint per client MCP, non una pagina da aprire nel browser.
 
-Docker must know the host directory before starting the container. To change it later, edit `KNOWLEDGE_HOST_PATH` in the root `.env` file and rerun the start script. The directory is mounted read-only. The UI cannot select a host directory outside that mount. The first full index downloads the embedding model; Qdrant, model cache, policy, and ingestion state persist in Docker volumes. Removing the cloned repository does not remove those volumes, but `docker compose down -v` does. Review the default [index policy](knowledge-mcp/mcp/index-policy.yaml) before indexing. The UI keeps its default exclusions in place.
+## Aggiornamento e dati
 
-Use `docker compose down` to stop the stack without removing its volumes. The workflow in [.github/workflows/docker.yml](.github/workflows/docker.yml) tests and publishes `latest` on pushes to `main`, plus version and commit tags. Remote access still requires an authenticated proxy; the web UI and MCP server do not provide HTTP login.
+Per scaricare una nuova versione:
 
-### Manual Python setup
+```bash
+git pull
+docker pull paoloronco/knowledge-mcp:latest
+docker compose up -d
+```
 
-Use Python 3.10+ and a local Qdrant instance listening on 127.0.0.1:6333. From the repository root:
+Qdrant, stato dell'indicizzazione, policy e cache del modello sono conservati in volumi Docker. `docker compose down` ferma l'app senza cancellarli; **`docker compose down -v` li elimina**, incluso l'indice già creato. La cartella dei documenti è montata in sola lettura e non viene cancellata da questi comandi. Per cambiarla, modifica `KNOWLEDGE_HOST_PATH` nel file `.env` e riavvia con `docker compose up -d`.
 
-~~~bash
-cd knowledge-mcp
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
-~~~
+WebUI e MCP sono esposti solo su localhost e non hanno un login integrato. Per usarli da remoto serve un proxy autenticato; vedi la [guida alla sicurezza](docs/security-model.md). Qdrant non è esposto all'host.
 
-Edit .env: set KNOWLEDGE_ROOT to an existing document directory. Review [index-policy.yaml](knowledge-mcp/mcp/index-policy.yaml) before indexing any private data. The default server bind address is localhost; configure an authenticated reverse proxy before making it reachable remotely.
+## Codice e documentazione
 
-When running Python directly inside a VM or container, `127.0.0.1` accepts connections only from that VM or container. If an authenticated proxy needs to reach the server over its network interface, set `MCP_HOST=0.0.0.0` in `knowledge-mcp/.env` and restart it. For a temporary connectivity check, run `MCP_HOST=0.0.0.0 python mcp/server.py`. The `/mcp` URL is a Streamable HTTP protocol endpoint, not a browser page; verify it with an MCP client. Do not expose this unauthenticated port directly to the network.
+- [Servizio, ingestion e avvio manuale con Python](knowledge-mcp/README.md)
+- [Architettura e comportamento della ricerca](docs/README.md)
+- [Esempi di integrazione con client AI](AI/README.md)
+- [Workflow che pubblica l'immagine su Docker Hub](.github/workflows/docker.yml)
 
-~~~bash
-python ingestion/ingest.py --dry-run --limit 10
-python ingestion/ingest.py
-python mcp/server.py
-~~~
-
-Run a complete ingestion without --limit when you want removed files purged from Qdrant. Restart the MCP server after ingestion so its in-memory lexical corpus reflects the new index. Connect an MCP Streamable HTTP client to http://127.0.0.1:8000/mcp and call knowledge_status or search_private_knowledge with a query string.
-
-For a Linux service example, see [deployment](knowledge-mcp/mcp/deployment/README.md).
-
-## What the server does
-
-- Parses PDF, DOCX, PPTX, Markdown, HTML and text files.
-- Deduplicates files by SHA-256 and updates Qdrant incrementally.
-- Filters excluded paths and file types at ingestion, then applies restricted and historical path rules at retrieval.
-- Returns up to eight diversified results per search; the dense and lexical candidate limits are 60 each.
-- Redacts common credential patterns in returned text. This is a best-effort output filter, not a guarantee that private data cannot leave the server.
-
-## Limits
-
-Search loads the complete Qdrant payload corpus into memory on its first call; restart the server after each ingestion run. The lexical scorer is a substring-based heuristic, not a Qdrant sparse-vector index. Scanned PDFs without an extractable text layer are not OCRed. Keep the source mount read-only and review the index policy before making the MCP endpoint available to clients.
-
-## Documentation
-
-Start with [architecture](docs/architecture.md), [security](docs/security-model.md), and [retrieval](docs/retrieval.md). The service has no built-in authentication; the deployment must provide it.
+Questo repository non contiene documenti privati, credenziali o dati Qdrant. Non ha ancora un file LICENSE.
