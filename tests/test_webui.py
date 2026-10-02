@@ -72,11 +72,19 @@ class AdminBoundaryTest(unittest.TestCase):
                         url = f"http://127.0.0.1:{server.server_port}"
                         with urllib.request.urlopen(url) as response:
                             self.assertIn(app.TOKEN, response.read().decode())
+                        lan = urllib.request.Request(url, headers={"Host": "10.10.10.80:8080"})
+                        with urllib.request.urlopen(lan) as response:
+                            self.assertEqual(response.status, 200)
+                        external = urllib.request.Request(url, headers={"Host": "untrusted.example:8080"})
+                        with self.assertRaises(urllib.error.HTTPError) as denied:
+                            urllib.request.urlopen(external)
+                        self.assertEqual(denied.exception.code, 403)
                         request = urllib.request.Request(url + "/api/config", data=b"{}", headers={"Content-Type": "application/json"})
                         with self.assertRaises(urllib.error.HTTPError) as denied:
                             urllib.request.urlopen(request)
                         self.assertEqual(denied.exception.code, 403)
                         request.add_header("X-Control-Token", app.TOKEN)
+                        request.add_header("Host", "10.10.10.80:8080")
                         with urllib.request.urlopen(request) as response:
                             self.assertEqual(response.status, 200)
                         upload = urllib.request.Request(url + "/api/upload?path=notes%2Fexample.md", data=b"Example document", headers={"X-Control-Token": app.TOKEN})

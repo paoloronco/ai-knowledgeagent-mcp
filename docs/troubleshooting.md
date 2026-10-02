@@ -2,7 +2,7 @@
 
 ## Docker container exits immediately or the Web UI is unreachable
 
-Use the complete `docker run` command in the root README, including port and volume flags. Check `docker ps -a` and `docker logs knowledge-mcp`. With Compose, check `docker compose ps` and `docker compose logs app`. The Web UI is available at `http://127.0.0.1:8080` on the Docker host. To open it from another computer, use a secure port forward or authenticated proxy.
+Use the complete `docker run` command in the root README, including port and volume flags. Check `docker ps -a` and `docker logs knowledge-mcp`. With Compose, check `docker compose ps` and `docker compose logs app`. Open `http://HOST_IP:8080` from the LAN. If it works at `http://127.0.0.1:8080` on the Docker host but not from another computer, check that Docker published port 8080 on `0.0.0.0` and that the host firewall allows it.
 
 ## Docker prints localized progress messages
 

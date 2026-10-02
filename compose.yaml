@@ -8,8 +8,8 @@ services:
       POLICY_FILE: /data/index-policy.yaml
       MCP_HOST: 0.0.0.0
     ports:
-      - "127.0.0.1:${UI_PORT:-8080}:8080"
-      - "127.0.0.1:${MCP_PORT:-8000}:8000"
+      - "0.0.0.0:${UI_PORT:-8080}:8080"
+      - "0.0.0.0:${MCP_PORT:-8000}:8000"
     volumes:
       - app_data:/data
       - qdrant_data:/qdrant/storage

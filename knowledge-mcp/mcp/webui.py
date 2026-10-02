@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import math
 import os
@@ -241,8 +242,15 @@ controller = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _local_host(self):
-        return self.headers.get("Host", "").split(":", 1)[0].lower() in ("localhost", "127.0.0.1")
+    def _allowed_host(self):
+        try:
+            host = urlsplit("//" + self.headers.get("Host", "")).hostname
+            if host == "localhost":
+                return True
+            ipaddress.ip_address(host)
+            return True
+        except (ValueError, TypeError):
+            return False
 
     def send(self, code, data, kind="application/json; charset=utf-8"):
         payload = data.encode("utf-8") if isinstance(data, str) else data
@@ -255,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
-        if not self._local_host():
+        if not self._allowed_host():
             self.send(403, json.dumps({"error": "Host not allowed"}))
             return
         if self.path == "/":
@@ -268,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, json.dumps({"error": "Not found"}))
 
     def do_POST(self):
-        if not self._local_host() or self.headers.get("X-Control-Token") != TOKEN:
+        if not self._allowed_host() or self.headers.get("X-Control-Token") != TOKEN:
             self.send(403, json.dumps({"error": "Unauthorized request"}))
             return
         try:
