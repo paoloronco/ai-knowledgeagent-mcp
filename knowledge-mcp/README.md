@@ -1,6 +1,6 @@
 # Knowledge MCP service
 
-The active code is [mcp/server.py](mcp/server.py), [mcp/retrieval.py](mcp/retrieval.py), and [ingestion/ingest.py](ingestion/ingest.py). Install the packages in [requirements.txt](requirements.txt), configure [.env.example](.env.example) as .env, and review [index-policy.yaml](mcp/index-policy.yaml).
+The active code is [mcp/server.py](mcp/server.py), [mcp/retrieval.py](mcp/retrieval.py), and [ingestion/ingest.py](ingestion/ingest.py). The Docker control UI lives in [mcp/webui.py](mcp/webui.py). Install the packages in [requirements.txt](requirements.txt), configure [.env.example](.env.example) as .env, and review [index-policy.yaml](mcp/index-policy.yaml).
 
 Run ingestion before starting the server:
 

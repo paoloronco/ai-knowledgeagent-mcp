@@ -20,7 +20,7 @@ SOURCE = Path("/knowledge").resolve()
 CONFIG = DATA / "config.json"
 POLICY = DATA / "index-policy.yaml"
 DEFAULT_POLICY = ROOT / "mcp" / "index-policy.yaml"
-HTML = Path(__file__).with_name("index.html")
+HTML = Path(__file__).with_name("webui.html")
 TOKEN = secrets.token_urlsafe(32)
 
 
@@ -158,7 +158,7 @@ class Controller:
 
     def status(self):
         try:
-            with urllib.request.urlopen("http://qdrant:6333/readyz", timeout=2) as response:
+            with urllib.request.urlopen(os.getenv("QDRANT_URL", "http://127.0.0.1:6333").rstrip("/") + "/readyz", timeout=2) as response:
                 qdrant = response.status == 200
         except Exception:
             qdrant = False

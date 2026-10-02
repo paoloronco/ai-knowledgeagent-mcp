@@ -12,6 +12,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && python -m pip install --no-cache-dir -r requirements.txt
 COPY ingestion/ ingestion/
 COPY mcp/ mcp/
-COPY admin/ admin/
 
-CMD ["python", "admin/app.py"]
+CMD ["python", "mcp/webui.py"]

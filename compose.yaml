@@ -6,7 +6,7 @@ services:
       - qdrant_data:/qdrant/storage
 
   app:
-    build: ./knowledge-mcp
+    image: paoloronco/knowledge-mcp:latest
     restart: unless-stopped
     depends_on:
       - qdrant

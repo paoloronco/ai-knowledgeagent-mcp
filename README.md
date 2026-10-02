@@ -14,19 +14,25 @@ There is currently no LICENSE file. Choose a license before making the repositor
 
 ## Quick start
 
-### Docker (Windows)
+### Docker
 
-Install and start Docker Desktop, then run this once from the repository root:
+Install and start Docker, clone this repository, then run from its root. Windows PowerShell:
 
 ~~~powershell
 .\start.ps1
 ~~~
 
-On first launch, enter an existing host directory containing documents. The script builds and starts the application and Qdrant with Docker Compose. Open the control UI at http://127.0.0.1:8080. It can run a ten-document dry run, index the collection, edit the indexing policy, choose a subfolder of the mounted directory, schedule repeated incremental runs, and enable or disable the MCP server. The MCP endpoint is http://127.0.0.1:8000/mcp while enabled. Both published ports listen only on localhost; Qdrant is not published to the host.
+Linux or macOS:
 
-Docker must know the host directory before starting the container. To change it later, edit `KNOWLEDGE_HOST_PATH` in the root `.env` file and run `.\start.ps1` again. The directory is mounted read-only. The UI cannot select a host directory outside that mount. The first full index downloads the embedding model; Qdrant, model cache, policy, and ingestion state persist in Docker volumes. Review the default [index policy](knowledge-mcp/mcp/index-policy.yaml) before indexing. The UI keeps its default exclusions in place.
+~~~bash
+bash start.sh
+~~~
 
-On Linux or macOS, set `KNOWLEDGE_HOST_PATH` to an existing directory and run `docker compose up --build -d`. Use `docker compose down` to stop the stack without removing its volumes. Remote access still requires an authenticated proxy; the web UI and MCP server do not provide HTTP login.
+On first launch, enter an existing host directory containing documents. The script downloads the public [Docker Hub image](https://hub.docker.com/r/paoloronco/knowledge-mcp) and starts the application and Qdrant with Docker Compose; no local Python installation or image build is needed. Open the control UI at http://127.0.0.1:8080. It can run a ten-document dry run, index the collection, edit the indexing policy, choose a subfolder of the mounted directory, schedule repeated incremental runs, and enable or disable the MCP server. The MCP endpoint is http://127.0.0.1:8000/mcp while enabled. Both published ports listen only on localhost; Qdrant is not published to the host.
+
+Docker must know the host directory before starting the container. To change it later, edit `KNOWLEDGE_HOST_PATH` in the root `.env` file and rerun the start script. The directory is mounted read-only. The UI cannot select a host directory outside that mount. The first full index downloads the embedding model; Qdrant, model cache, policy, and ingestion state persist in Docker volumes. Removing the cloned repository does not remove those volumes, but `docker compose down -v` does. Review the default [index policy](knowledge-mcp/mcp/index-policy.yaml) before indexing. The UI keeps its default exclusions in place.
+
+Use `docker compose down` to stop the stack without removing its volumes. The workflow in [.github/workflows/docker.yml](.github/workflows/docker.yml) tests and publishes `latest` on pushes to `main`, plus version and commit tags. Remote access still requires an authenticated proxy; the web UI and MCP server do not provide HTTP login.
 
 ### Manual Python setup
 

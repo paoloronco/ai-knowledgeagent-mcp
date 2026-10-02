@@ -17,4 +17,4 @@
 4. Test authentication on the public hostname before giving it to a client.
 5. Rotate any exposed credential; redaction does not undo exposure.
 
-The [Cloudflare guide](../knowledge-mcp/security/cloudflare/README.md) covers one possible access layer. No specific homelab address, Google project, or Cloudflare token is required by this repository.
+The [Cloudflare guide](cloudflare-access.md) covers one possible access layer. No specific homelab address, Google project, or Cloudflare token is required by this repository.

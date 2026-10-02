@@ -21,7 +21,9 @@ if (-not ($lines | Where-Object { $_ -match '^KNOWLEDGE_HOST_PATH=' })) {
 
 docker compose config --quiet
 if ($LASTEXITCODE -ne 0) { throw 'Configurazione Docker Compose non valida.' }
-docker compose up --build -d
+docker compose pull
+if ($LASTEXITCODE -ne 0) { throw 'Impossibile scaricare le immagini Docker.' }
+docker compose up -d
 if ($LASTEXITCODE -ne 0) { throw 'Avvio Docker non riuscito. Controlla docker compose logs.' }
 
 Write-Host "Web UI: http://$(docker compose port app 8080)"

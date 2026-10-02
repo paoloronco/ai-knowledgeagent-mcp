@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from qdrant_client import QdrantClient
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "knowledge-mcp"
 sys.path.insert(0, str(ROOT / "ingestion"))
 sys.path.insert(0, str(ROOT / "mcp"))
 import ingest

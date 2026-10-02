@@ -10,9 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "admin"))
-import app
+ROOT = Path(__file__).resolve().parents[1] / "knowledge-mcp"
+sys.path.insert(0, str(ROOT / "mcp"))
+import webui as app
 
 
 class AdminBoundaryTest(unittest.TestCase):

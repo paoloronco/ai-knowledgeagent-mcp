@@ -62,4 +62,4 @@ sudo systemctl enable --now knowledge-mcp
 sudo journalctl -u knowledge-mcp -f
 ~~~
 
-After every ingestion run, restart knowledge-mcp to reload the lexical corpus. Check Qdrant's /readyz endpoint and call the MCP knowledge_status tool with a real MCP client; a plain GET is not a tool call. Put an authenticated HTTPS proxy or Cloudflare Access in front of any remote endpoint. See the [Cloudflare guide](../../security/cloudflare/README.md).
+After every ingestion run, restart knowledge-mcp to reload the lexical corpus. Check Qdrant's /readyz endpoint and call the MCP knowledge_status tool with a real MCP client; a plain GET is not a tool call. Put an authenticated HTTPS proxy or Cloudflare Access in front of any remote endpoint. See the [Cloudflare guide](../../../docs/cloudflare-access.md).
