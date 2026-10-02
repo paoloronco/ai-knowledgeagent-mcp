@@ -1,0 +1,48 @@
+# =============================================================================
+# KNOWLEDGE_ROOT can be overridden via environment variable
+# Default is placeholder, real path set via KNOWLEDGE_ROOT env
+# =============================================================================
+# EXAMPLE: KNOWLEDGE_ROOT=/path/to/knowledge/root
+knowledge_root: ${KNOWLEDGE_ROOT:-/path/to/knowledge/root}
+
+include_extensions:
+  - .pdf
+  - .docx
+  - .pptx
+  - .md
+  - .txt
+  - .html
+  - .htm
+
+exclude_directories:
+  - .git
+  - .venv
+  - venv
+  - node_modules
+  - __pycache__
+  - dist
+  - build
+  - coverage
+  - cache
+  - .cache
+  - vendor
+  - .stversions
+  - sample-folder
+  - sample-folder
+  - sample-folder
+  - sample-folder
+
+exclude_top_level:
+  - secrets
+  - credentials
+  - .env
+
+exclude_extensions:
+  - .key
+  - .pem
+  - .p12
+  - .pfx
+  - .crt
+  - .cer
+
+max_file_size_mb: 50

@@ -1,0 +1,253 @@
+# =============================================================================
+# Knowledge MCP OSS - .gitignore
+# Secure public repository - protects against private data exposure
+# =============================================================================
+
+# =============================================================================
+# Python
+# =============================================================================
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.pyc
+*.so
+.Python
+
+# =============================================================================
+# Environment / Secrets (CRITICAL)
+# =============================================================================
+
+# Never commit actual secrets or environment files
+.env
+.env.*
+!.env.example
+!*.template
+
+*.secret
+*.secret.*
+secrets/
+credentials/
+application_default_credentials.json
+service-account.json
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.keystore
+
+# =============================================================================
+# Local Knowledge / SMB (CRITICAL - protects actual knowledge base)
+# =============================================================================
+
+knowledge/
+mnt/
+knowledge_share/
+/opt/knowledge/
+
+# =============================================================================
+# Qdrant (vector database - never committed)
+# =============================================================================
+
+qdrant/
+qdrant/storage/
+qdrant_data/
+storage/
+storage/
+*.qdrant
+
+# =============================================================================
+# Models and embeddings (CRITICAL - large files and potential IP)
+# =============================================================================
+
+models/
+models/cache/
+models/snapshots/
+sentence-transformers/
+embeddings/
+
+# =============================================================================
+# Ingestion Runtime State
+# =============================================================================
+
+state/
+state/*.json
+state/*.tmp
+logs/
+logs/*.log
+*.log
+
+# =============================================================================
+# IDE / OS
+# =============================================================================
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~.nib
+
+# =============================================================================
+# Deployment / Configuration (runtime, not committed)
+# =============================================================================
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Deployment state
+state/
+deployments/
+deployment-*.json
+bootstrap-config/
+
+# Backups
+*.backup
+*.bak
+*.old
+*.tar.gz
+*.zip
+restore/
+
+# =============================================================================
+# Build/Distribution Files
+# =============================================================================
+
+build/
+dist/
+*.egg-info/
+.eggs/
+.wheels/
+
+# =============================================================================
+# Test Coverage
+# =============================================================================
+
+htmlcov/
+.coverage
+.pytest_cache/
+.nox/
+
+# =============================================================================
+# Legacy / Historical (do not commit)
+# =============================================================================
+
+# Old structure (replaced with new organization)
+homelab/
+OSSFUTURE/
+
+# =============================================================================
+# Documentation / Private Data (CRITICAL)
+# =============================================================================
+
+# Internal documentation (do not commit)
+Projects/
+Private/
+confidential/
+internal-docs/
+secure-notes/
+
+# =============================================================================
+# System / Service Files (runtime, not committed)
+# =============================================================================
+
+# Service files (systemd, upstart, etc.)
+*.service
+*.target
+*.socket
+
+# Logs and runtime state
+logs/*.log
+state/*.json
+state/*.tmp
+
+# =============================================================================
+# Generated / Build Files
+# =============================================================================
+
+# Index state (can be regenerated)
+index-state.json
+qdrant-index/
+
+# Model cache
+models/cache/
+models/snapshots/
+
+# =============================================================================
+# Large/Binary Files
+# =============================================================================
+
+*.pdf
+*.docx
+*.pptx
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# =============================================================================
+# OS Specific
+# =============================================================================
+
+.DS_Store
+Icon
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Temporary Files
+# =============================================================================
+
+tmp/
+temp/
+*.tmp
+*.tmp.*
+*.bak
+*.swp
+
+# =============================================================================
+# Credential Patterns (git-secrets should catch these)
+# =============================================================================
+
+credentials/
+secrets/
+.keys/
+.keys/
+
+# =============================================================================
+# Data Files (never commit actual indexed data)
+# =============================================================================
+
+data/
+ingestion-data/
+qdrant-storage/
+vector-db/
+
+# =============================================================================
+# Deployment Scripts Runtime
+# =============================================================================
+
+# Generated deployment files
+*.sh
+*.bat
+deploy-scripts/
+deployment-scripts/
+
+# =============================================================================
+# Docker
+# =============================================================================
+
+.dockerignore
+Dockerfile.local
+docker-compose.override.yml
