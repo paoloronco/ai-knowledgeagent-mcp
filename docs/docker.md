@@ -1,6 +1,16 @@
 # Docker deployment notes
 
-The one-command Compose setup is in the [root README](../README.md). On Linux/NAS it starts the app and its host agent automatically. The app starts Qdrant and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, and synchronized documents are under `/data`. A third volume retains the agent connection.
+The image starts the app and bundled Qdrant. Docker must configure port publication, persistent storage, and host folder access when creating the container. A bare `docker run paoloronco/knowledge-mcp` does not supply those settings.
+
+## Linux/NAS deployment
+
+The repository's [compose.yaml](../compose.yaml) configures the app and automatic host agent, publishes ports 8080 and 8000, and retains data in Docker volumes. From a local repository checkout:
+
+```bash
+docker compose up -d
+```
+
+The app stores Qdrant data at `/qdrant/storage`. Settings, ingestion state, the model cache, and synchronized documents are under `/data`. A third volume retains the agent connection. To update, run `docker compose pull` followed by `docker compose up -d`. To stop the services, run `docker compose stop`.
 
 ## Switching an existing `docker run` installation to Compose
 

@@ -70,7 +70,7 @@ function renderSourceStatus(s) {
   let text;
   if (s.config.source_mode === 'host_agent') {
     const root = s.config.host_root;
-    text = !root ? 'Enter the absolute path of a folder on the Docker host.' : s.agent_error ? 'Folder unavailable: ' + s.agent_error : !s.agent_connected ? 'Folder saved: ' + root + (s.agent_managed ? ' · Automatic host agent is starting or unavailable. Check its Docker service.' : ' · Start the app with Docker Compose to enable automatic host access.') : s.agent_syncing ? 'Checking and syncing ' + root + '…' : s.source_ready ? 'Folder ready: ' + root + ' · ' + s.agent_file_count + ' eligible documents' : 'Waiting for the host service to check ' + root + '…';
+    text = !root ? 'Enter the absolute path of a folder on the Docker host.' : s.agent_error ? 'Folder unavailable: ' + s.agent_error : !s.agent_connected ? 'Folder saved: ' + root + (s.agent_managed ? ' · Automatic host agent is starting or unavailable. Check its Docker service.' : ' · Host folder access is not configured for this installation.') : s.agent_syncing ? 'Checking and syncing ' + root + '…' : s.source_ready ? 'Folder ready: ' + root + ' · ' + s.agent_file_count + ' eligible documents' : 'Waiting for the host service to check ' + root + '…';
   } else {
     text = (s.source_ready ? 'Folder available to the container: ' : 'Folder unavailable: ') + s.config.source_root;
   }
@@ -159,7 +159,7 @@ async function service(name, action) { try { await api('/api/service', {name, ac
 async function waitForFreshHostSync() {
   const before = await api('/api/status');
   if (before.config.source_mode !== 'host_agent') return;
-  if (!before.agent_connected) throw Error(before.agent_managed ? 'Automatic host agent is unavailable. Check the host-agent Docker service.' : 'Start the app with Docker Compose to enable automatic host access.');
+  if (!before.agent_connected) throw Error(before.agent_managed ? 'Automatic host agent is unavailable. Check the host-agent Docker service.' : 'Host folder access is not configured for this installation.');
   const request = await api('/api/agent/refresh', {});
   message('Syncing the host folder before indexing…');
   const deadline = Date.now() + 15 * 60 * 1000;
@@ -192,7 +192,7 @@ async function refresh() {
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), ...(s.agent_managed ? [badge('Host agent', s.agent_connected)] : []));
     $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
-    const syncState = s.agent_error ? 'Host sync failed: ' + s.agent_error : !s.agent_connected ? s.agent_managed ? 'Automatic host agent unavailable' : 'Automatic host access requires Docker Compose' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
+    const syncState = s.agent_error ? 'Host sync failed: ' + s.agent_error : !s.agent_connected ? s.agent_managed ? 'Automatic host agent unavailable' : 'Host folder access is not configured' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
     $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} finished with exit code ${s.last_result.exit_code} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
