@@ -1,6 +1,7 @@
 services:
   app:
     image: paoloronco/knowledge-mcp:latest
+    container_name: knowledge-mcp
     restart: unless-stopped
     environment:
       INGESTION_BASE_DIR: /data/ingestion

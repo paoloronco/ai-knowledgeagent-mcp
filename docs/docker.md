@@ -1,6 +1,30 @@
 # Docker deployment notes
 
-The standard `docker run` command and host agent setup are in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, synchronized host documents, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
+The one-command Compose setup and host agent setup are in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, synchronized host documents, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
+
+## Switching an existing `docker run` installation to Compose
+
+The earlier `docker run` example used volumes named `knowledge_app` and `knowledge_qdrant`. To reuse them, create `compose.override.yaml` beside `compose.yaml`:
+
+```yaml
+volumes:
+  app_data:
+    external: true
+    name: knowledge_app
+  qdrant_data:
+    external: true
+    name: knowledge_qdrant
+```
+
+Stop and remove the old container, then start Compose:
+
+```bash
+docker stop -t 30 knowledge-mcp
+docker rm knowledge-mcp
+docker compose up -d
+```
+
+Keep those volumes; removing them loses the dashboard settings, indexing state, synchronized documents, and Qdrant data. If the old container had a read-only document mount, add that mount to the same override file before starting Compose.
 
 ## Select a host folder without changing Docker
 

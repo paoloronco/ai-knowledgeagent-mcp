@@ -30,6 +30,19 @@ jobs:
           python -m pip install -r knowledge-mcp/requirements.txt
           python -m unittest discover -s tests -q
           docker compose config --quiet
+          docker compose config --format json > "$RUNNER_TEMP/knowledge-compose.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads((Path(os.environ["RUNNER_TEMP"]) / "knowledge-compose.json").read_text())
+          app = config["services"]["app"]
+          assert app["container_name"] == "knowledge-mcp"
+          assert app["restart"] == "unless-stopped"
+          assert {(port["published"], port["target"]) for port in app["ports"]} == {("8080", 8080), ("8000", 8000)}
+          assert {(volume["source"], volume["target"]) for volume in app["volumes"]} == {("app_data", "/data"), ("qdrant_data", "/qdrant/storage")}
+          PY
       - uses: docker/setup-buildx-action@v4
       - name: Build for startup test
         uses: docker/build-push-action@v7
