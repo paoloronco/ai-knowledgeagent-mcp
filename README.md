@@ -1,5 +1,7 @@
 # Knowledge MCP
 
+![Currently under development](https://img.shields.io/badge/status-Currently%20under%20development-orange)
+
 Search your documents through an MCP server. The Docker image contains the Web UI, ingestion service, MCP server, and Qdrant. A small host agent lets the dashboard select any document folder on the Docker host without changing Docker mounts. The dashboard also supports existing read-only bind mounts. Review the policy, run indexing, schedule updates, and enable or disable MCP. There is no browser document upload.
 
 ## Docker quick start
