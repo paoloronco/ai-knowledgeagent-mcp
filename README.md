@@ -49,7 +49,7 @@ The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isol
 Once the application has been deployed with networking and document access configured:
 
 - Open `http://HOST_IP:8080`.
-- Onboarding guides you through optional dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a dry-run test, and initial indexing. If you skip login, anyone who can reach port 8080 can manage the dashboard.
+- Onboarding guides you through optional dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a separate document scan with the eligible count and file preview, a dry-run test, and initial indexing. The dry run starts only after the scan finds eligible documents. If you skip login, anyone who can reach port 8080 can manage the dashboard.
 - Enter a **Document root path**, such as `/mnt/documents`, and click **+**. With the automatic host agent connected, the path refers to a folder on the Linux host.
 - After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.
 - Use the dashboard to manage services and schedule incremental indexing.

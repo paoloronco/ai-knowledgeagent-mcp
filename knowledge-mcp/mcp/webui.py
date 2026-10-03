@@ -149,14 +149,21 @@ class Controller:
             tmp.replace(POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
-        self.config = {"source_selection": "auto", "source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "setup_step": 0 if first_start else 6}
+        self.config = {"source_selection": "auto", "source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "setup_step": 0 if first_start else 7, "setup_flow_version": 2}
         migrated = False
         if CONFIG.exists():
             stored = json.loads(CONFIG.read_text(encoding="utf-8"))
             self.config.update(stored)
             if "setup_step" not in stored and not self.config["onboarding_complete"]:
                 self.config["setup_step"] = 1 if AUTH.exists() else 0
-            migrated = "folders" not in stored or "source_selection" not in stored
+            migrated = "folders" not in stored or "source_selection" not in stored or "setup_flow_version" not in stored
+            if "setup_flow_version" not in stored:
+                previous_step = self.config["setup_step"]
+                if self.config["onboarding_complete"]:
+                    self.config["setup_step"] = 7 if previous_step >= 6 else 6
+                elif previous_step >= 4:
+                    self.config["setup_step"] = 4
+                self.config["setup_flow_version"] = 2
             if "folders" not in stored:
                 self.config["folders"] = [stored.get("subfolder", "")]
         if self.config["source_mode"] == "host_agent":
@@ -177,6 +184,7 @@ class Controller:
         self.agent_error_text = ""
         self.sync_in_progress = False
         self.agent_progress = None
+        self.local_scan = {"revision": -1, "running": False, "checked": 0, "eligible": 0, "preview": [], "error": ""}
         self.agent_manifest = json.loads(AGENT_MANIFEST.read_text(encoding="utf-8")) if AGENT_MANIFEST.exists() else {"revision": -1, "files": {}}
         self.stopping = False
         self.qdrant = None
@@ -222,17 +230,23 @@ class Controller:
 
     def complete_onboarding(self):
         with self.lock:
+            if self.config["setup_step"] < 6:
+                raise ValueError("Complete the dry-run test before indexing")
             self.config["onboarding_complete"] = True
-            self.config["setup_step"] = max(self.config["setup_step"], 5)
+            self.config["setup_step"] = max(self.config["setup_step"], 6)
             self._save()
 
     def advance_setup(self, step):
-        if type(step) is not int or not 1 <= step <= 5:
+        if type(step) is not int or not 1 <= step <= 6:
             raise ValueError("Invalid setup step")
         with self.lock:
             if not self.config["onboarding_complete"] and step > self.config["setup_step"]:
                 if step != self.config["setup_step"] + 1:
                     raise ValueError("Complete the previous setup step first")
+                if step == 5 and not self.scan_ready():
+                    raise ValueError("Scan the selected folder and find eligible documents before the dry run")
+                if step == 6 and not (self.last_result and self.last_result["dry_run"] and self.last_result["exit_code"] == 0):
+                    raise ValueError("Complete a successful dry-run test first")
                 self.config["setup_step"] = step
                 self._save()
             return {"setup_step": self.config["setup_step"]}
@@ -290,7 +304,64 @@ class Controller:
     def agent_task(self):
         with self.lock:
             self.agent_seen_at = time.time()
-            return {"source_mode": self.config["source_mode"], "host_root": self.config["host_root"], "revision": self.config["sync_revision"], "sync_request": self.config["sync_request"], "index_running": bool(self.ingest and self.ingest.poll() is None), "policy": yaml.safe_load(POLICY.read_text(encoding="utf-8"))}
+            return {"source_mode": self.config["source_mode"], "host_root": self.config["host_root"], "revision": self.config["sync_revision"], "sync_request": self.config["sync_request"], "index_running": bool(self.ingest and self.ingest.poll() is None), "scan_enabled": self.config["onboarding_complete"] or self.config["setup_step"] >= 4, "policy": yaml.safe_load(POLICY.read_text(encoding="utf-8"))}
+
+    def scan_ready(self):
+        if self.config["source_mode"] == "host_agent":
+            return self.host_source_ready() and bool(self.agent_manifest.get("files"))
+        scan = self.local_scan
+        return scan["revision"] == self.config["sync_revision"] and not scan["running"] and not scan["error"] and scan["eligible"] > 0
+
+    def start_scan(self):
+        with self.lock:
+            if self.config["source_mode"] == "host_agent":
+                return self.request_agent_sync()
+            if self.local_scan["running"]:
+                return {"requested": True}
+            root = validate_source_root(self.config["source_root"])
+            folders = normalize_folders(self.config["folders"], root)
+            policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+            revision = self.config["sync_revision"]
+            self.local_scan = {"revision": revision, "running": True, "checked": 0, "eligible": 0, "preview": [], "error": ""}
+            threading.Thread(target=self._scan_local, args=(root, folders, policy, revision), daemon=True).start()
+            return {"requested": True}
+
+    def _scan_local(self, root, folders, policy, revision):
+        checked, eligible, preview = 0, 0, []
+        excluded_dirs = {name.casefold() for name in policy["exclude_directories"]}
+        excluded_top = {name.casefold() for name in policy["exclude_top_level"]}
+        last_report = time.monotonic()
+        try:
+            def unreadable(error):
+                raise RuntimeError(f"Could not read document folder {error.filename}: {error.strerror}") from error
+            for folder in folders:
+                selected = root / folder
+                for base, dirs, names in os.walk(selected, followlinks=False, onerror=unreadable):
+                    current = Path(base)
+                    relative_dir = current.relative_to(root)
+                    dirs[:] = sorted(name for name in dirs if not (current / name).is_symlink() and name.casefold() not in excluded_dirs and (relative_dir.parts or name.casefold() not in excluded_top))
+                    for name in sorted(names):
+                        document = current / name
+                        checked += 1
+                        if not document.is_symlink():
+                            relative = document.relative_to(root).as_posix()
+                            if allowed_file(relative, document.stat().st_size, policy):
+                                eligible += 1
+                                if len(preview) < 20:
+                                    preview.append(relative)
+                        if time.monotonic() - last_report >= 0.25:
+                            with self.lock:
+                                if revision != self.config["sync_revision"]:
+                                    return
+                                self.local_scan.update(checked=checked, eligible=eligible, preview=list(preview))
+                            last_report = time.monotonic()
+            with self.lock:
+                if revision == self.config["sync_revision"]:
+                    self.local_scan.update(running=False, checked=checked, eligible=eligible, preview=preview)
+        except (OSError, ValueError, RuntimeError) as error:
+            with self.lock:
+                if revision == self.config["sync_revision"]:
+                    self.local_scan.update(running=False, checked=checked, eligible=eligible, preview=preview, error=str(error)[:512])
 
     def request_agent_sync(self):
         with self.lock:
@@ -307,14 +378,15 @@ class Controller:
         checked = values.get("checked")
         completed = values.get("completed")
         total = values.get("total")
-        if phase not in ("scanning", "planning", "transferring", "finalizing") or any(type(value) is not int or value < 0 for value in (checked, completed, total)) or completed > total:
+        eligible = values.get("eligible", 0)
+        if phase not in ("scanning", "planning", "transferring", "finalizing") or any(type(value) is not int or value < 0 for value in (checked, completed, total, eligible)) or completed > total:
             raise ValueError("Invalid host sync progress")
         with self.lock:
             if values.get("revision") != self.config["sync_revision"] or values.get("sync_request") != self.config["sync_request"] or self.config["source_mode"] != "host_agent":
                 return {"accepted": False}
             if phase == "scanning" and checked == 0:
                 self.agent_error_text = ""
-            self.agent_progress = {"phase": phase, "checked": checked, "completed": completed, "total": total}
+            self.agent_progress = {"phase": phase, "checked": checked, "eligible": eligible, "completed": completed, "total": total}
             self.agent_seen_at = time.time()
             self.sync_in_progress = True
             return {"accepted": True}
@@ -409,9 +481,10 @@ class Controller:
                         path.rmdir()
             tmp = AGENT_MANIFEST.with_suffix(".tmp")
             synced_at = time.time()
-            tmp.write_text(json.dumps({"revision": revision, "sync_request": request_id, "files": files, "synced_at": synced_at}), encoding="utf-8")
+            checked = (self.agent_progress or {}).get("checked", 0)
+            tmp.write_text(json.dumps({"revision": revision, "sync_request": request_id, "files": files, "checked": checked, "synced_at": synced_at}), encoding="utf-8")
             tmp.replace(AGENT_MANIFEST)
-            self.agent_manifest = {"revision": revision, "sync_request": request_id, "files": files, "synced_at": synced_at}
+            self.agent_manifest = {"revision": revision, "sync_request": request_id, "files": files, "checked": checked, "synced_at": synced_at}
             self.sync_in_progress = False
             self.agent_error_text = ""
             if request_id == self.config["sync_request"]:
@@ -512,16 +585,16 @@ class Controller:
             raise ValueError("Invalid MCP state")
         with self.lock:
             root_changed = str(selected_root) != self.config["source_root"] or selected_host != self.config["host_root"] or mode != self.config["source_mode"] or folders != self.config["folders"]
-            source_changed = str(selected_root) != self.config["source_root"] or selected_host != self.config["host_root"] or mode != self.config["source_mode"]
             interval_changed = interval != self.config["interval_hours"]
             if root_changed and self.ingest and self.ingest.poll() is None:
                 raise ValueError("Wait until indexing finishes before changing folders")
             self.config.update(source_selection=selection, source_mode=mode, host_root=selected_host, source_root=str(selected_root), folders=folders, interval_hours=interval, mcp_enabled=enabled)
-            if source_changed:
+            if root_changed:
                 self.config["sync_revision"] += 1
                 self.sync_in_progress = False
                 self.agent_error_text = ""
                 self.agent_progress = None
+                self.local_scan = {"revision": -1, "running": False, "checked": 0, "eligible": 0, "preview": [], "error": ""}
             if root_changed:
                 self.invalidate_result()
                 if not self.config["onboarding_complete"]:
@@ -541,6 +614,10 @@ class Controller:
                 raise ValueError("Indexing is already running")
             if self.config["source_mode"] == "host_agent" and not self.host_source_ready():
                 raise ValueError("Wait for the host agent to finish syncing documents")
+            if not self.config["onboarding_complete"] and not self.scan_ready():
+                raise ValueError("Complete the document scan and find eligible documents before indexing")
+            if self.config["source_mode"] == "host_agent" and not self.agent_manifest.get("files"):
+                raise ValueError("No eligible documents found. Review the document folder and indexing policy")
             selected_root = validate_source_root(self.config["source_root"])
             normalize_folders(self.config["folders"], selected_root)
             self.invalidate_result()
@@ -558,8 +635,8 @@ class Controller:
         code = process.wait()
         with self.lock:
             self.last_result = {"exit_code": code, "dry_run": dry_run, "finished_at": time.time()}
-            if code == 0 and not dry_run and self.config["setup_step"] >= 5:
-                self.config["setup_step"] = 6
+            if code == 0 and not dry_run and self.config["setup_step"] >= 6:
+                self.config["setup_step"] = 7
                 self._save()
             result_file = DATA / "last-result.json"
             tmp = result_file.with_suffix(".tmp")
@@ -619,6 +696,19 @@ class Controller:
                     source_ready = source_ready and self.host_source_ready()
             except ValueError:
                 source_ready = False
+            host_mode = self.config["source_mode"] == "host_agent"
+            if host_mode:
+                scan_complete = self.host_source_ready()
+                scan_running = self.sync_in_progress
+                scan_checked = self.agent_manifest.get("checked", 0) if scan_complete else (self.agent_progress or {}).get("checked", 0)
+                scan_eligible = len(self.agent_manifest.get("files", {})) if scan_complete else (self.agent_progress or {}).get("eligible", 0)
+                scan_preview = sorted(self.agent_manifest.get("files", {}))[:20] if scan_complete else []
+                scan_error = self.agent_error_text
+            else:
+                scan = self.local_scan
+                scan_complete = scan["revision"] == self.config["sync_revision"] and not scan["running"] and not scan["error"]
+                scan_running = scan["running"] and scan["revision"] == self.config["sync_revision"]
+                scan_checked, scan_eligible, scan_preview, scan_error = scan["checked"], scan["eligible"], scan["preview"], scan["error"]
             log = DATA / "ingest.log"
             tail = ""
             if log.exists():
@@ -635,6 +725,13 @@ class Controller:
                 "mcp_running": bool(self.mcp and self.mcp.poll() is None and mcp_reachable),
                 "index_running": bool(self.ingest and self.ingest.poll() is None),
                 "source_ready": source_ready,
+                "scan_complete": scan_complete,
+                "scan_ready": scan_complete and scan_eligible > 0,
+                "scan_running": scan_running,
+                "scan_checked": scan_checked,
+                "scan_eligible_count": scan_eligible,
+                "scan_eligible_preview": scan_preview,
+                "scan_error": scan_error,
                 "agent_connected": time.time() - self.agent_seen_at < 60,
                 "agent_paired": AGENT_AUTH.exists(),
                 "agent_managed": AUTO_AGENT_CONFIG is not None,
@@ -841,6 +938,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = controller.agent_pair()
             elif self.path == "/api/agent/refresh":
                 result = controller.request_agent_sync()
+            elif self.path == "/api/scan":
+                result = controller.start_scan()
             elif self.path == "/api/security":
                 if values.get("enabled") is True:
                     controller.set_password(values.get("password"))
@@ -878,11 +977,11 @@ class Handler(BaseHTTPRequestHandler):
                     if not controller.config["onboarding_complete"]:
                         controller.config["setup_step"] = min(controller.config["setup_step"], 3)
                         controller._save()
-                    if controller.config["source_mode"] == "host_agent":
-                        controller.config["sync_revision"] += 1
-                        controller.sync_in_progress = False
-                        controller.agent_progress = None
-                        controller._save()
+                    controller.config["sync_revision"] += 1
+                    controller.sync_in_progress = False
+                    controller.agent_progress = None
+                    controller.local_scan = {"revision": -1, "running": False, "checked": 0, "eligible": 0, "preview": [], "error": ""}
+                    controller._save()
                 result = {"saved": True}
             else:
                 self.send(404, json.dumps({"error": "Not found"}))

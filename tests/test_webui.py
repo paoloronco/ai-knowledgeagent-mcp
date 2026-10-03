@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -135,6 +136,7 @@ class AdminBoundaryTest(unittest.TestCase):
             source = data / "documents"
             mounted = Path(tmp) / "mounted"
             mounted.mkdir()
+            (mounted / "sample.md").write_text("An eligible document", encoding="utf-8")
             with (
                 patch.object(app, "DATA", data), patch.object(app, "SOURCE", source),
                 patch.object(app, "MANAGED_SOURCE", source), patch.object(app, "HOST_SOURCE", data / "host-documents"),
@@ -147,24 +149,42 @@ class AdminBoundaryTest(unittest.TestCase):
                 self.assertEqual(controller.config["setup_step"], 1)
                 with self.assertRaisesRegex(ValueError, "previous setup step"):
                     controller.advance_setup(3)
-                for step in range(2, 6):
-                    self.assertEqual(controller.advance_setup(step)["setup_step"], step)
-                with self.assertRaises(ValueError):
-                    controller.advance_setup(6)
+                controller.advance_setup(2)
                 controller.update({"source_mode": "container", "source_root": str(mounted), "folders": [""]})
                 self.assertEqual(controller.config["setup_step"], 2)
-                for step in range(3, 6):
+                for step in (3, 4):
                     controller.advance_setup(step)
+                with self.assertRaisesRegex(ValueError, "Scan the selected folder"):
+                    controller.advance_setup(5)
+                controller.start_scan()
+                for _ in range(100):
+                    if controller.status()["scan_complete"]:
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(controller.status()["scan_ready"])
+                self.assertEqual(controller.status()["scan_eligible_preview"], ["sample.md"])
+                controller.advance_setup(5)
+                with self.assertRaisesRegex(ValueError, "successful dry-run"):
+                    controller.advance_setup(6)
+                controller.run_index(dry_run=True)
+                controller.ingest.wait(timeout=30)
+                for _ in range(100):
+                    if controller.last_result:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(controller.last_result["exit_code"], 0)
+                self.assertIn("Documents parsed: 1", (data / "ingest.log").read_text(encoding="utf-8"))
+                controller.advance_setup(6)
                 controller.complete_onboarding()
                 controller._finish_index(Mock(wait=lambda: 1), False)
-                self.assertEqual(controller.config["setup_step"], 5)
-                controller._finish_index(Mock(wait=lambda: 0), True)
-                self.assertEqual(controller.config["setup_step"], 5)
-                controller._finish_index(Mock(wait=lambda: 0), False)
                 self.assertEqual(controller.config["setup_step"], 6)
+                controller._finish_index(Mock(wait=lambda: 0), True)
+                self.assertEqual(controller.config["setup_step"], 6)
+                controller._finish_index(Mock(wait=lambda: 0), False)
+                self.assertEqual(controller.config["setup_step"], 7)
                 controller.close()
                 restored = app.Controller()
-                self.assertEqual(restored.config["setup_step"], 6)
+                self.assertEqual(restored.config["setup_step"], 7)
                 restored.close()
 
     def test_managed_source_is_created_on_first_start(self):

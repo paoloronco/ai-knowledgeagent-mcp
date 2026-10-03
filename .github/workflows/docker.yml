@@ -145,6 +145,8 @@ jobs:
               config = json.load(response)
           assert config["source_mode"] == "host_agent" and config["host_root"] == host_root
           assert config["source_selection"] == "auto"
+          for step in (2, 3, 4):
+              post("/api/onboarding/progress", {"step": step}, cookie).close()
           assert wait_source(host_root)["agent_file_count"] == 1
           next_root = Path(os.environ["RUNNER_TEMP"]) / "knowledge-agent-next"
           next_root.mkdir()
@@ -152,6 +154,8 @@ jobs:
           (next_root / "cache").mkdir()
           (next_root / "cache" / "excluded.md").write_text("Excluded fixture", encoding="utf-8")
           post("/api/config", {"document_root": str(next_root), "source_selection": "auto", "folders": [""]}, cookie).close()
+          for step in (3, 4):
+              post("/api/onboarding/progress", {"step": step}, cookie).close()
           assert wait_source(str(next_root))["agent_file_count"] == 1
           subprocess.run(["docker", "exec", "knowledge-smoke", "python", "-c", "from pathlib import Path; p=Path('/data/host-documents'); assert (p/'second.md').read_text() == 'Second folder document'; assert not (p/'host.md').exists(); assert not (p/'cache/excluded.md').exists()"], check=True)
           subprocess.run(["docker", "compose", "-p", "knowledge-smoke", "-f", "compose.yaml", "-f", str(Path(os.environ["RUNNER_TEMP"]) / "knowledge-smoke.yaml"), "restart"], check=True)

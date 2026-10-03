@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 let current = null, policy = null, wizardStep = 0, authRequired = false;
 let messageTimer = null, refreshError = null;
-const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Dry-run test', 'Initial indexing'];
+const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
 
 async function api(path, data) {
   const options = data === undefined ? {} : {
@@ -27,21 +27,21 @@ function badge(name, good) {
   el.textContent = name + ': ' + (good ? 'ready' : 'unavailable'); return el;
 }
 function renderSetupProgress(status) {
-  const done = Math.max(0, Math.min(6, status.config.setup_step || 0));
+  const done = Math.max(0, Math.min(7, status.config.setup_step || 0));
   $('setup-progress-bar').value = done;
-  $('wizard-progress').textContent = done === 6 ? 'Setup complete' : status.config.onboarding_complete ? status.index_running ? 'Initial indexing in progress · 5 of 6 steps complete' : 'Waiting for initial indexing · 5 of 6 steps complete' : `Step ${wizardStep + 1} of 6 · ${setupLabels[wizardStep]}`;
+  $('wizard-progress').textContent = done === 7 ? 'Setup complete' : status.config.onboarding_complete ? status.index_running ? 'Initial indexing in progress · 6 of 7 steps complete' : 'Waiting for initial indexing · 6 of 7 steps complete' : `Step ${wizardStep + 1} of 7 · ${setupLabels[wizardStep]}`;
   for (const item of $('setup-steps').children) {
     const index = Number(item.dataset.progressStep);
     item.classList.toggle('complete', index < done);
     item.classList.toggle('current', index === wizardStep);
-    item.classList.toggle('failed', index === 5 && done === 5 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0);
+    item.classList.toggle('failed', index === 6 && done === 6 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0);
     if (index === wizardStep) item.setAttribute('aria-current', 'step');
     else item.removeAttribute('aria-current');
   }
-  if (done === 5 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0) $('wizard-progress').textContent = 'Initial indexing failed · review the log and retry';
+  if (done === 6 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0) $('wizard-progress').textContent = 'Initial indexing failed · review the log and retry';
 }
 function showStep(step) {
-  wizardStep = Math.max(0, Math.min(5, step));
+  wizardStep = Math.max(0, Math.min(6, step));
   document.querySelectorAll('.step').forEach(el => el.classList.toggle('active', Number(el.dataset.step) === wizardStep));
   if (current) renderSetupProgress(current);
   const list = $('setup-steps'), item = list.children[wizardStep];
@@ -50,7 +50,7 @@ function showStep(step) {
 function backStep() { showStep(wizardStep - 1); }
 async function nextStep() {
   try {
-    const step = Math.min(5, wizardStep + 1);
+    const step = Math.min(6, wizardStep + 1);
     const result = await api('/api/onboarding/progress', {step});
     current.config.setup_step = result.setup_step;
     showStep(step);
@@ -68,31 +68,39 @@ function fillSourceInputs() {
 }
 function renderSourceStatus(s) {
   let text;
-  const progress = $('setup-sync-progress');
-  let showProgress = false;
   if (s.config.source_mode === 'host_agent') {
     const root = s.config.host_root;
-    const phase = s.agent_progress?.phase;
     if (!root) text = 'Enter the absolute path of a folder on the Docker host.';
-    else if (s.agent_error) text = 'Folder unavailable: ' + s.agent_error;
-    else if (!s.agent_connected) text = 'Folder saved: ' + root + (s.agent_managed ? ' · Automatic host agent is starting or unavailable. Check its Docker service.' : ' · Host folder access is not configured for this installation.');
-    else if (s.source_ready) text = 'Folder ready: ' + root + ' · ' + s.agent_file_count + ' eligible documents';
-    else {
-      showProgress = true;
-      if (phase === 'scanning') text = 'Scanning host folder: ' + s.agent_progress.checked + ' files checked…';
-      else if (phase === 'planning') text = 'Comparing eligible documents with the synchronized copy…';
-      else if (phase === 'transferring') text = 'Transferring changed documents: ' + s.agent_progress.completed + ' of ' + s.agent_progress.total + '…';
-      else if (phase === 'finalizing') text = 'Finalizing host folder sync…';
-      else text = 'Waiting for the host agent to scan ' + root + '…';
-    }
+    else text = 'Folder selected: ' + root + '. Set the indexing policy before scanning.';
   } else {
-    text = (s.source_ready ? 'Folder available to the container: ' : 'Folder unavailable: ') + s.config.source_root;
+    text = (s.source_ready ? 'Folder selected: ' : 'Folder unavailable: ') + s.config.source_root;
   }
   $('setup-source-status').textContent = text; $('dashboard-source-status').textContent = text;
+}
+function renderScanStatus(s) {
+  const progress = $('setup-sync-progress');
+  const phase = s.agent_progress?.phase;
+  let text;
+  if (s.scan_error) text = 'Scan failed: ' + s.scan_error;
+  else if (s.scan_complete) text = `Scan complete: ${s.scan_checked} files checked, ${s.scan_eligible_count} eligible documents.` + (s.scan_eligible_count ? '' : ' Review the folder and indexing policy, then scan again.');
+  else if (s.config.source_mode === 'host_agent' && !s.agent_connected) text = s.agent_managed ? 'Waiting for the host agent. Check its Docker service.' : 'Host folder access is not configured.';
+  else if (phase === 'scanning' || s.scan_running && s.config.source_mode !== 'host_agent') text = `Scanning ${s.config.source_mode === 'host_agent' ? 'host folder' : 'document folder'}: ${s.scan_checked} files checked, ${s.scan_eligible_count} eligible…`;
+  else if (phase === 'planning') text = 'Comparing eligible documents with the synchronized copy…';
+  else if (phase === 'transferring') text = `Transferring changed documents: ${s.agent_progress.completed} of ${s.agent_progress.total}…`;
+  else if (phase === 'finalizing') text = 'Finalizing host folder sync…';
+  else text = s.config.source_mode === 'host_agent' ? 'Waiting for the host agent to scan the selected folder…' : 'Start the document scan.';
+  $('setup-scan-status').textContent = text;
+  const showProgress = !s.scan_complete && (s.scan_running || s.config.source_mode === 'host_agent' && s.config.host_root && !s.scan_error);
   progress.classList.toggle('hidden', !showProgress);
   if (showProgress && s.agent_progress?.phase === 'transferring' && s.agent_progress.total > 0) progress.value = 100 * s.agent_progress.completed / s.agent_progress.total;
   else progress.removeAttribute('value');
+  const list = $('setup-eligible-list'); list.replaceChildren();
+  for (const name of s.scan_eligible_preview || []) { const item = document.createElement('li'); item.textContent = name; list.append(item); }
+  if (s.scan_eligible_count > (s.scan_eligible_preview || []).length) { const item = document.createElement('li'); item.textContent = `…and ${s.scan_eligible_count - s.scan_eligible_preview.length} more`; list.append(item); }
+  $('scan-next').disabled = !s.scan_ready;
+  $('scan-again').disabled = s.scan_running;
 }
+async function startScan() { try { await api('/api/scan', {}); await refresh(); } catch (e) { message(e.message, true); } }
 async function syncNow() {
   try { await api('/api/agent/refresh', {}); message('Host sync requested. The agent will scan the folder shortly.'); }
   catch (e) { message(e.message, true); }
@@ -131,7 +139,7 @@ async function saveSource(advance = false, fromWizard = false) {
     const result = await api('/api/config', {document_root: sourceRoot, source_selection: selection, folders: [''], interval_hours: interval});
     current.config = result; current.source_root = result.source_root;
     fillSourceInputs(); await refresh();
-    if (advance) { await waitForFreshHostSync(false); await nextStep(); }
+    if (advance) await nextStep();
     else message('Document root saved.');
   } catch (e) { message(e.message, true); }
 }
@@ -168,36 +176,17 @@ function formPolicy(id) {
   values.max_file_size_mb = Number(node.querySelector('[data-policy-size]').value); return values;
 }
 async function savePolicy(advance) {
-  try { await api('/api/policy', {policy: formPolicy(advance ? 'wizard-policy' : 'dashboard-policy')}); await loadPolicy(); message('Policy saved.'); if (advance) await nextStep(); }
+  try { await api('/api/policy', {policy: formPolicy(advance ? 'wizard-policy' : 'dashboard-policy')}); await loadPolicy(); message('Policy saved.'); if (advance) { await nextStep(); if (current.config.source_mode === 'container') await startScan(); } }
   catch (e) { message(e.message, true); }
 }
 async function saveYaml() { try { await api('/api/policy', {content: $('policy-yaml').value}); await loadPolicy(); message('YAML saved.'); } catch (e) { message(e.message, true); } }
 async function service(name, action) { try { await api('/api/service', {name, action}); message(`${name}: ${action} requested.`); await refresh(); } catch (e) { message(e.message, true); } }
-async function waitForFreshHostSync(requestFresh = true) {
-  const before = await api('/api/status');
-  if (before.config.source_mode !== 'host_agent') return;
-  if (!before.agent_connected) throw Error(before.agent_managed ? 'Automatic host agent is unavailable. Check the host-agent Docker service.' : 'Host folder access is not configured for this installation.');
-  const requestId = requestFresh ? (await api('/api/agent/refresh', {})).sync_request : before.config.sync_request;
-  if (!requestFresh && before.source_ready && before.agent_sync_request_completed >= requestId) return;
-  const deadline = Date.now() + 60 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    const status = await api('/api/status');
-    renderSourceStatus(status);
-    if (status.agent_error) throw Error('Host sync failed: ' + status.agent_error);
-    if (status.config.source_mode !== 'host_agent' || status.config.sync_revision !== before.config.sync_revision) throw Error('Document source changed during sync');
-    if (!status.agent_connected) throw Error('Host agent disconnected during sync. Check its Docker service.');
-    if (status.source_ready && status.agent_sync_request_completed >= requestId) return;
-  }
-  throw Error('Host sync did not finish within one hour. Check the agent status and log.');
-}
 async function runIndex(dry_run) {
-  try { await waitForFreshHostSync(); await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
+  try { await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
   catch (e) { message(e.message, true); }
 }
 async function startInitialIndex() {
   try {
-    await waitForFreshHostSync();
     await api('/api/index', {dry_run: false}); await api('/api/onboarding', {});
     $('wizard').classList.add('hidden'); $('dashboard').classList.remove('hidden');
     message('Indexing started. Follow the log, then start MCP.'); await refresh();
@@ -208,6 +197,7 @@ async function refresh() {
     const s = await api('/api/status'); current = s;
     renderSetupProgress(s);
     renderSourceStatus(s);
+    renderScanStatus(s);
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), ...(s.agent_managed ? [badge('Host agent', s.agent_connected)] : []));
     $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
@@ -247,7 +237,7 @@ async function start() {
     fillSourceInputs();
     $('interval').value = current.config.interval_hours;
     await loadPolicy();
-    showStep(Math.min(5, current.config.setup_step || 0)); await refresh(); setInterval(refresh, 3000);
+    showStep(Math.min(6, current.config.setup_step || 0)); await refresh(); if (wizardStep === 4 && current.config.source_mode === 'container' && !current.scan_complete && !current.scan_running) await startScan(); setInterval(refresh, 3000);
   } catch (e) { message(e.message, true); }
 }
 start();

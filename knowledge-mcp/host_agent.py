@@ -113,7 +113,7 @@ def inventory(root, policy, host_mount=None, progress=None):
             checked += 1
             if path.is_symlink():
                 if progress:
-                    progress(checked)
+                    progress(checked, len(files))
                 continue
             relative = path.relative_to(folder).as_posix()
             try:
@@ -123,9 +123,9 @@ def inventory(root, policy, host_mount=None, progress=None):
             except (OSError, ValueError) as error:
                 raise RuntimeError(f"Could not read {path}: {error}") from error
             if progress:
-                progress(checked)
+                progress(checked, len(files))
     if progress:
-        progress(checked, force=True)
+        progress(checked, len(files), force=True)
     return folder, files
 
 
@@ -133,18 +133,19 @@ def sync(base, token, task, host_mount=None):
     last_report = 0
     last_phase = None
     checked = 0
+    eligible = 0
 
     def report(phase, completed=0, total=0, force=False):
         nonlocal last_report, last_phase
         now = time.monotonic()
         if force or phase != last_phase or now - last_report >= 1:
-            request(base, token, "/api/agent/progress", {"revision": task["revision"], "sync_request": task["sync_request"], "phase": phase, "checked": checked, "completed": completed, "total": total})
+            request(base, token, "/api/agent/progress", {"revision": task["revision"], "sync_request": task["sync_request"], "phase": phase, "checked": checked, "eligible": eligible, "completed": completed, "total": total})
             last_report = now
             last_phase = phase
 
-    def scanned(count, force=False):
-        nonlocal checked
-        checked = count
+    def scanned(count, found, force=False):
+        nonlocal checked, eligible
+        checked, eligible = count, found
         report("scanning", force=force)
 
     report("scanning")
@@ -223,7 +224,7 @@ def run(config_path, once=False, scan_seconds=300, host_mount=None):
             token = config["token"]
             task = request(base, token, "/api/agent/task")
             signature = (task["revision"], task["sync_request"], json.dumps(task["policy"], sort_keys=True))
-            if task["source_mode"] == "host_agent" and task["host_root"] and not task.get("index_running") and (signature != last_signature or time.time() - last_scan >= scan_seconds):
+            if task["source_mode"] == "host_agent" and task["host_root"] and task.get("scan_enabled", True) and not task.get("index_running") and (signature != last_signature or time.time() - last_scan >= scan_seconds):
                 done = threading.Event()
                 worker = threading.Thread(target=heartbeat, args=(base, token, done), daemon=True)
                 worker.start()
