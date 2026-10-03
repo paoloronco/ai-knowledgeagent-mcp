@@ -7,13 +7,45 @@ services:
       INGESTION_BASE_DIR: /data/ingestion
       POLICY_FILE: /data/index-policy.yaml
       MCP_HOST: 0.0.0.0
+      AUTO_HOST_AGENT_CONFIG: /run/host-agent/agent.json
     ports:
       - "0.0.0.0:${UI_PORT:-8080}:8080"
       - "0.0.0.0:${MCP_PORT:-8000}:8000"
     volumes:
       - app_data:/data
       - qdrant_data:/qdrant/storage
+      - host_agent_data:/run/host-agent
+
+  host-agent:
+    image: paoloronco/knowledge-mcp:latest
+    restart: unless-stopped
+    command: ["python", "host_agent.py", "run", "--config", "/run/host-agent/agent.json", "--host-root", "/host", "--log-stdout"]
+    network_mode: service:app
+    depends_on:
+      app:
+        condition: service_healthy
+        restart: true
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      disable: true
+    volumes:
+      - host_agent_data:/run/host-agent:ro
+      - type: bind
+        source: /
+        target: /host
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /host/proc:ro,noexec,nosuid,size=1m
+      - /host/sys:ro,noexec,nosuid,size=1m
+      - /host/dev:ro,noexec,nosuid,size=1m
+      - /host/run:ro,noexec,nosuid,size=1m
 
 volumes:
   qdrant_data:
   app_data:
+  host_agent_data:

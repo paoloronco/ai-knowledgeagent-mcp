@@ -59,7 +59,6 @@ async function nextStep() {
 function sourceModeChanged() {
   const mode = document.activeElement?.id?.endsWith('source-mode') ? document.activeElement.value : current.config.source_selection;
   $('setup-source-mode').value = mode; $('dashboard-source-mode').value = mode;
-  document.querySelectorAll('[data-host-help]').forEach(el => el.classList.toggle('hidden', mode === 'container'));
 }
 function fillSourceInputs() {
   const root = current.config.source_mode === 'host_agent' ? current.config.host_root : current.config.source_root;
@@ -71,20 +70,11 @@ function renderSourceStatus(s) {
   let text;
   if (s.config.source_mode === 'host_agent') {
     const root = s.config.host_root;
-    text = !root ? 'Enter the absolute path of a folder on the Docker host.' : s.agent_error ? 'Folder unavailable: ' + s.agent_error : !s.agent_connected ? 'Folder saved: ' + root + ' · Host service disconnected. Connect it below.' : s.agent_syncing ? 'Checking and syncing ' + root + '…' : s.source_ready ? 'Folder ready: ' + root + ' · ' + s.agent_file_count + ' eligible documents' : 'Waiting for the host service to check ' + root + '…';
+    text = !root ? 'Enter the absolute path of a folder on the Docker host.' : s.agent_error ? 'Folder unavailable: ' + s.agent_error : !s.agent_connected ? 'Folder saved: ' + root + (s.agent_managed ? ' · Automatic host agent is starting or unavailable. Check its Docker service.' : ' · Start the app with Docker Compose to enable automatic host access.') : s.agent_syncing ? 'Checking and syncing ' + root + '…' : s.source_ready ? 'Folder ready: ' + root + ' · ' + s.agent_file_count + ' eligible documents' : 'Waiting for the host service to check ' + root + '…';
   } else {
     text = (s.source_ready ? 'Folder available to the container: ' : 'Folder unavailable: ') + s.config.source_root;
   }
   $('setup-source-status').textContent = text; $('dashboard-source-status').textContent = text;
-  document.querySelectorAll('[data-agent-connection-state]').forEach(el => el.textContent = s.agent_connected ? 'Host service connected' : s.agent_paired ? 'Host service paired but disconnected' : 'Host service not connected');
-}
-async function pairAgent() {
-  try {
-    const result = await api('/api/agent/pair', {});
-    $('setup-agent-key').textContent = 'Pairing key (shown once): ' + result.token;
-    $('dashboard-agent-key').textContent = 'Pairing key (shown once): ' + result.token;
-    message('Host agent key generated. Install or re-pair the agent on the Docker host.');
-  } catch (e) { message(e.message, true); }
 }
 async function syncNow() {
   try { await api('/api/agent/refresh', {}); message('Host sync requested. The agent will scan the folder shortly.'); }
@@ -124,9 +114,8 @@ async function saveSource(advance = false, fromWizard = false) {
     const result = await api('/api/config', {document_root: sourceRoot, source_selection: selection, folders: [''], interval_hours: interval});
     current.config = result; current.source_root = result.source_root;
     fillSourceInputs(); await refresh();
-    if (result.source_mode === 'host_agent' && !current.agent_connected) $(fromWizard ? 'setup-host-connection' : 'dashboard-host-connection').open = true;
     if (advance) { await waitForFreshHostSync(); await nextStep(); }
-    else message(result.source_mode === 'host_agent' && !current.agent_connected ? 'Folder saved. Connect the host service below to access it.' : 'Document root saved.');
+    else message('Document root saved.');
   } catch (e) { message(e.message, true); }
 }
 
@@ -170,7 +159,7 @@ async function service(name, action) { try { await api('/api/service', {name, ac
 async function waitForFreshHostSync() {
   const before = await api('/api/status');
   if (before.config.source_mode !== 'host_agent') return;
-  if (!before.agent_connected) throw Error('Connect the host service in Document folders before continuing.');
+  if (!before.agent_connected) throw Error(before.agent_managed ? 'Automatic host agent is unavailable. Check the host-agent Docker service.' : 'Start the app with Docker Compose to enable automatic host access.');
   const request = await api('/api/agent/refresh', {});
   message('Syncing the host folder before indexing…');
   const deadline = Date.now() + 15 * 60 * 1000;
@@ -201,9 +190,9 @@ async function refresh() {
     renderSetupProgress(s);
     renderSourceStatus(s);
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
-    $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready));
+    $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), ...(s.agent_managed ? [badge('Host agent', s.agent_connected)] : []));
     $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
-    const syncState = !s.agent_connected ? 'Host agent disconnected' : s.agent_error ? 'Host sync failed: ' + s.agent_error : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
+    const syncState = s.agent_error ? 'Host sync failed: ' + s.agent_error : !s.agent_connected ? s.agent_managed ? 'Automatic host agent unavailable' : 'Automatic host access requires Docker Compose' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
     $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} finished with exit code ${s.last_result.exit_code} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
@@ -235,7 +224,6 @@ async function start() {
     current = await api('/api/status');
     $('login-enabled').checked = auth.required || current.config.setup_step === 0;
     fillSourceInputs();
-    if (current.config.source_mode === 'host_agent' && current.config.host_root && !current.agent_connected) $('setup-host-connection').open = $('dashboard-host-connection').open = true;
     $('interval').value = current.config.interval_hours;
     await loadPolicy();
     showStep(Math.min(5, current.config.setup_step || 0)); await refresh(); setInterval(refresh, 3000);

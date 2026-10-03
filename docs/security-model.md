@@ -2,8 +2,8 @@
 
 ## Boundaries
 
-- The dashboard has no browser document upload. The paired host agent can transfer policy-eligible documents into the app's persistent volume. It runs under the host user's permissions; choose a dedicated user with read access only to intended source folders where possible. Legacy uploaded documents may also remain in the volume. Treat the whole volume as private data.
-- Host folder selection requires dashboard login. The agent pairing key is shown only when created and stored hashed in the app volume. Keep the host-side key file private. The agent accepts plain HTTP only over the host's loopback address; use HTTPS for a remote dashboard.
+- The dashboard has no browser document upload. Compose starts and connects the Linux host agent automatically. It receives read-only access to the host filesystem, reads only the selected root, and transfers policy-eligible documents into the app's persistent volume. Its root filesystem is read-only; it drops capabilities except `DAC_READ_SEARCH`, masks host runtime/system directories, and has no Docker socket. Legacy uploaded documents may also remain in the app volume. Treat the volumes as private data.
+- Host folder selection requires dashboard login. Automatic connection credentials stay in a private Docker volume and are stored hashed in the app volume. The agent shares the app's network namespace and communicates over loopback. It publishes no ports. Review the host read access in Compose before deploying; on Linux older than 5.12, nested bind mounts may remain writable.
 - Bind Qdrant to localhost. The application does not authenticate to Qdrant by default.
 - Docker publishes the Web UI and MCP server on the host's LAN interfaces. The Web UI can use a password; the MCP server has no built-in login. Limit access with a firewall and add an authenticated HTTPS proxy or Cloudflare Access before Internet exposure. Use HTTPS when entering the Web UI password over a network.
 - Review index-policy.yaml before ingestion. Directory and extension filters are the first boundary. Retrieval repeats restricted-path filtering, including Windows-style separators, as a second boundary.

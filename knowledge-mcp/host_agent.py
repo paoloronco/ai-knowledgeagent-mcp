@@ -1,4 +1,4 @@
-"""Host-side document companion. Runs outside Docker with Python 3.10+."""
+"""Document companion, started automatically by Docker Compose on Linux."""
 
 import argparse
 import getpass
@@ -10,11 +10,13 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from collections import deque
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "mcp"))
 from host_sync import allowed_file, host_root
@@ -49,17 +51,55 @@ def file_hash(path):
     return digest.hexdigest()
 
 
-def inventory(root, policy):
-    folder = Path(host_root(root)).expanduser()
+def resolve_host_folder(root, host_mount=None):
+    value = host_root(root)
+    if host_mount is None:
+        return Path(value).expanduser().resolve()
+    if not value.startswith("/") or "\\" in value or ":" in value:
+        raise ValueError("Enter an absolute Linux host path, such as /mnt/documents")
+    mount = host_mount.resolve()
+    pending = deque(PurePosixPath(value).parts[1:])
+    resolved = []
+    links = 0
+    # Absolute symlinks refer to the host filesystem, not the agent's image.
+    while pending:
+        part = pending.popleft()
+        if part == "..":
+            if resolved:
+                resolved.pop()
+            continue
+        if part in ("", ".", "/"):
+            continue
+        candidate = mount.joinpath(*resolved, part)
+        if candidate.is_symlink():
+            links += 1
+            if links > 40:
+                raise ValueError("Too many symlinks in the host folder path")
+            target = PurePosixPath(os.readlink(candidate))
+            if target.is_absolute():
+                resolved = []
+            pending.extendleft(reversed(target.parts))
+        else:
+            resolved.append(part)
+    if not resolved or resolved[0] in ("proc", "sys", "dev", "run"):
+        raise ValueError("Choose a document folder, not a host system directory")
+    return mount.joinpath(*resolved)
+
+
+def inventory(root, policy, host_mount=None):
+    folder = resolve_host_folder(root, host_mount)
     if not folder.is_dir():
-        raise ValueError(f"Host folder is unavailable: {folder}")
+        raise ValueError(f"Host folder is unavailable: {root}")
     folder = folder.resolve()
     if folder == Path(folder.anchor):
         raise ValueError("Choose a folder, not a filesystem root")
     restricted = {x.casefold() for x in policy["exclude_directories"] + policy["exclude_top_level"]}
-    if any(part.casefold() in restricted for part in folder.parts):
+    logical = folder.relative_to(host_mount.resolve()) if host_mount is not None else folder
+    original_parts = PurePosixPath(host_root(root)).parts if host_mount is not None else folder.parts
+    if any(part.casefold() in restricted for part in (*logical.parts, *original_parts)):
         raise ValueError("The selected host folder is excluded by the indexing policy")
     files = {}
+
     def unreadable(error):
         raise RuntimeError(f"Could not read host folder {error.filename}: {error.strerror}") from error
 
@@ -81,8 +121,8 @@ def inventory(root, policy):
     return folder, files
 
 
-def sync(base, token, task):
-    folder, files = inventory(task["host_root"], task["policy"])
+def sync(base, token, task, host_mount=None):
+    folder, files = inventory(task["host_root"], task["policy"], host_mount)
     body = {"revision": task["revision"], "sync_request": task["sync_request"], "files": files}
     missing = request(base, token, "/api/agent/plan", body)["missing"]
     for name in missing:
@@ -134,7 +174,15 @@ def validate_url(value):
     return value.rstrip("/")
 
 
-def run(config_path, once=False, scan_seconds=300):
+def heartbeat(base, token, done):
+    while not done.wait(15):
+        try:
+            request(base, token, "/api/agent/task")
+        except Exception:
+            LOG.warning("Dashboard heartbeat failed")
+
+
+def run(config_path, once=False, scan_seconds=300, host_mount=None):
     last_signature = None
     last_scan = 0
     while True:
@@ -145,8 +193,15 @@ def run(config_path, once=False, scan_seconds=300):
             token = config["token"]
             task = request(base, token, "/api/agent/task")
             signature = (task["revision"], task["sync_request"], json.dumps(task["policy"], sort_keys=True))
-            if task["source_mode"] == "host_agent" and task["host_root"] and (signature != last_signature or time.time() - last_scan >= scan_seconds):
-                sync(base, token, task)
+            if task["source_mode"] == "host_agent" and task["host_root"] and not task.get("index_running") and (signature != last_signature or time.time() - last_scan >= scan_seconds):
+                done = threading.Event()
+                worker = threading.Thread(target=heartbeat, args=(base, token, done), daemon=True)
+                worker.start()
+                try:
+                    sync(base, token, task, host_mount)
+                finally:
+                    done.set()
+                    worker.join(timeout=1)
                 last_signature = signature
                 last_scan = time.time()
             if once:
@@ -211,13 +266,18 @@ def main():
     serve.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     serve.add_argument("--once", action="store_true")
     serve.add_argument("--scan-seconds", type=int, default=300)
+    serve.add_argument("--host-root", type=Path, help="Read-only Docker mount of the Linux host filesystem")
+    serve.add_argument("--log-stdout", action="store_true", help="Write logs to Docker logs")
     args = parser.parse_args()
-    DEFAULT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=DEFAULT_CONFIG.parent / "agent.log", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if getattr(args, "log_stdout", False):
+        logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    else:
+        DEFAULT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(filename=DEFAULT_CONFIG.parent / "agent.log", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.command == "install":
         install(args.url, args.config)
     else:
-        run(args.config, args.once, args.scan_seconds)
+        run(args.config, args.once, args.scan_seconds, args.host_root)
 
 
 if __name__ == "__main__":

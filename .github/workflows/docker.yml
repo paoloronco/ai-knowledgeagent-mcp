@@ -42,7 +42,11 @@ jobs:
           assert app["container_name"] == "knowledge-mcp"
           assert app["restart"] == "unless-stopped"
           assert {(port["published"], port["target"]) for port in app["ports"]} == {("8080", 8080), ("8000", 8000)}
-          assert {(volume["source"], volume["target"]) for volume in app["volumes"]} == {("app_data", "/data"), ("qdrant_data", "/qdrant/storage")}
+          assert {(volume["source"], volume["target"]) for volume in app["volumes"]} == {("app_data", "/data"), ("qdrant_data", "/qdrant/storage"), ("host_agent_data", "/run/host-agent")}
+          agent = config["services"]["host-agent"]
+          assert agent["read_only"] and agent["network_mode"] == "service:app"
+          assert agent["cap_drop"] == ["ALL"] and agent["cap_add"] == ["DAC_READ_SEARCH"]
+          assert any(mount["source"] == "/" and mount["target"] == "/host" and mount["read_only"] for mount in agent["volumes"])
           PY
       - uses: docker/setup-buildx-action@v4
       - name: Build for startup test
@@ -52,25 +56,34 @@ jobs:
           file: ./knowledge-mcp/Dockerfile
           load: true
           tags: knowledge-mcp:smoke
-      - name: Verify standalone Web UI and Qdrant
+      - name: Verify automatic Docker host access, Web UI and Qdrant
         run: |
           mkdir -p "$RUNNER_TEMP/knowledge-smoke-docs"
           printf 'Knowledge MCP smoke test document.\n' > "$RUNNER_TEMP/knowledge-smoke-docs/note.md"
           mkdir -p "$RUNNER_TEMP/knowledge-agent-docs"
           printf 'Host agent document.\n' > "$RUNNER_TEMP/knowledge-agent-docs/host.md"
-          docker run -d --name knowledge-smoke -p 0.0.0.0:18080:8080 -v "$RUNNER_TEMP/knowledge-smoke-docs:/mnt/knowledge:ro" knowledge-mcp:smoke
-          trap 'docker rm -f knowledge-smoke >/dev/null 2>&1 || true' EXIT
+          export UI_PORT=18080 MCP_PORT=18000
+          cat > "$RUNNER_TEMP/knowledge-smoke.yaml" <<EOF
+          services:
+            app:
+              image: knowledge-mcp:smoke
+              container_name: knowledge-smoke
+              volumes:
+                - $RUNNER_TEMP/knowledge-smoke-docs:/mnt/knowledge:ro
+            host-agent:
+              image: knowledge-mcp:smoke
+          EOF
+          trap 'docker compose -p knowledge-smoke -f compose.yaml -f "$RUNNER_TEMP/knowledge-smoke.yaml" down -v >/dev/null 2>&1 || true' EXIT
+          docker compose -p knowledge-smoke -f compose.yaml -f "$RUNNER_TEMP/knowledge-smoke.yaml" up -d
           if ! python - <<'PY'
           import json
           import os
           from pathlib import Path
           import re
-          import sys
+          import subprocess
           import time
           import urllib.error
           import urllib.request
-          sys.path.insert(0, "knowledge-mcp")
-          import host_agent
 
           base = "http://127.0.0.1:18080"
           for _ in range(90):
@@ -87,10 +100,11 @@ jobs:
           with urllib.request.urlopen(base) as response:
               page = response.read().decode()
           assert "First-time setup" in page
+          assert "host_agent.py install" not in page and "Generate pairing key" not in page
           token = re.search(r"const token='([^']+)'", page).group(1)
           request = urllib.request.Request(
               base + "/api/config",
-              data=json.dumps({"document_root": "/mnt/knowledge", "source_selection": "auto", "folders": [""], "interval_hours": 0}).encode(),
+              data=json.dumps({"document_root": "/mnt/knowledge", "source_selection": "container", "folders": [""], "interval_hours": 0}).encode(),
               headers={"Content-Type": "application/json", "X-Control-Token": token},
           )
           with urllib.request.urlopen(request, timeout=10) as response:
@@ -109,22 +123,44 @@ jobs:
           login = urllib.request.Request(base + "/api/login", data=json.dumps({"password": "smoke-test-password"}).encode(), headers={"Content-Type": "application/json"})
           with urllib.request.urlopen(login, timeout=10) as response:
               cookie = response.headers["Set-Cookie"].split(";", 1)[0]
-          with post("/api/agent/pair", {}, cookie) as response:
-              agent_token = json.load(response)["token"]
+          def status():
+              with urllib.request.urlopen(urllib.request.Request(base + "/api/status", headers={"Cookie": cookie}), timeout=3) as response:
+                  return json.load(response)
+          def wait_source(root):
+              for _ in range(90):
+                  state = status()
+                  if state["agent_error"]:
+                      raise SystemExit(state["agent_error"])
+                  if state["agent_managed"] and state["source_ready"] and state["config"]["host_root"] == root:
+                      return state
+                  time.sleep(1)
+              raise SystemExit("Docker host agent did not synchronize the selected folder")
           host_root = str(Path(os.environ["RUNNER_TEMP"]) / "knowledge-agent-docs")
           with post("/api/config", {"document_root": host_root, "source_selection": "auto", "folders": [""]}, cookie) as response:
               config = json.load(response)
           assert config["source_mode"] == "host_agent" and config["host_root"] == host_root
           assert config["source_selection"] == "auto"
-          with urllib.request.urlopen(urllib.request.Request(base + "/host-agent.zip", headers={"Cookie": cookie}), timeout=3) as response:
-              import io
-              import zipfile
-              archive = zipfile.ZipFile(io.BytesIO(response.read()))
-              assert set(archive.namelist()) == {"host_agent.py", "mcp/host_sync.py"}
-          host_agent.sync(base, agent_token, host_agent.request(base, agent_token, "/api/agent/task"))
-          with urllib.request.urlopen(urllib.request.Request(base + "/api/status", headers={"Cookie": cookie}), timeout=3) as response:
-              status = json.load(response)
-          assert status["source_ready"] and status["agent_file_count"] == 1
+          assert wait_source(host_root)["agent_file_count"] == 1
+          next_root = Path(os.environ["RUNNER_TEMP"]) / "knowledge-agent-next"
+          next_root.mkdir()
+          (next_root / "second.md").write_text("Second folder document", encoding="utf-8")
+          (next_root / "sample-folder").mkdir()
+          (next_root / "sample-folder" / "excluded.md").write_text("Excluded fixture", encoding="utf-8")
+          post("/api/config", {"document_root": str(next_root), "source_selection": "auto", "folders": [""]}, cookie).close()
+          assert wait_source(str(next_root))["agent_file_count"] == 1
+          subprocess.run(["docker", "exec", "knowledge-smoke", "python", "-c", "from pathlib import Path; p=Path('/data/host-documents'); assert (p/'second.md').read_text() == 'Second folder document'; assert not (p/'host.md').exists(); assert not (p/'sample-folder/excluded.md').exists()"], check=True)
+          subprocess.run(["docker", "compose", "-p", "knowledge-smoke", "-f", "compose.yaml", "-f", str(Path(os.environ["RUNNER_TEMP"]) / "knowledge-smoke.yaml"), "restart"], check=True)
+          # The retained credentials reconnect the agent after both containers restart.
+          for _ in range(90):
+              try:
+                  with urllib.request.urlopen(login, timeout=3) as response:
+                      cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                  break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise SystemExit("Dashboard did not restart")
+          assert wait_source(str(next_root))["agent_file_count"] == 1
           request = urllib.request.Request(base + "/api/upload?path=blocked.md", data=b"blocked", headers={"X-Control-Token": token, "Cookie": cookie})
           try:
               urllib.request.urlopen(request, timeout=3)
@@ -143,6 +179,7 @@ jobs:
           PY
           then
             docker logs knowledge-smoke
+            docker compose -p knowledge-smoke -f compose.yaml -f "$RUNNER_TEMP/knowledge-smoke.yaml" logs host-agent
             exit 1
           fi
       - uses: docker/metadata-action@v6

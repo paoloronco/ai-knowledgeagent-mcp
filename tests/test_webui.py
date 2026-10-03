@@ -1,13 +1,10 @@
 import json
-import io
-import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
-import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -257,13 +254,8 @@ class AdminBoundaryTest(unittest.TestCase):
                             urllib.request.urlopen(upload)
                         self.assertEqual(denied.exception.code, 404)
                         self.assertFalse((source / "notes" / "example.md").exists())
-                        with urllib.request.urlopen(url + "/host-agent.zip") as response:
-                            archive = zipfile.ZipFile(io.BytesIO(response.read()))
-                        self.assertEqual(set(archive.namelist()), {"host_agent.py", "mcp/host_sync.py"})
-                        extracted = data / "downloaded-agent"
-                        archive.extractall(extracted)
-                        result = subprocess.run([sys.executable, str(extracted / "host_agent.py"), "--help"], capture_output=True, text=True)
-                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("host_agent.py install", page)
+                        self.assertNotIn("Generate pairing key", page)
                         (source / "notes").mkdir()
                         config = {"folders": [str(source / "notes")], "interval_hours": 2}
                         request = urllib.request.Request(url + "/api/config", data=json.dumps(config).encode(), headers={"Content-Type": "application/json", "X-Control-Token": app.TOKEN})
@@ -432,6 +424,39 @@ class AdminBoundaryTest(unittest.TestCase):
                 self.assertIn(str(script), unit.read_text(encoding="utf-8"))
             else:
                 self.assertIn(str(script), run.call_args_list[0].args[0][run.call_args_list[0].args[0].index("/TR") + 1])
+
+    def test_docker_agent_pairs_automatically_and_reuses_credentials_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            credentials = Path(tmp) / "agent" / "agent.json"
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", data / "documents"),
+                patch.object(app, "SOURCE", data / "documents"), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "HOST_SOURCE", data / "host-documents"), patch.object(app, "AUTH", data / "auth.json"),
+                patch.object(app, "AGENT_AUTH", data / "agent-auth.json"), patch.object(app, "AUTO_AGENT_CONFIG", credentials),
+                patch.object(app, "POLICY", data / "index-policy.yaml"), patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+            ):
+                controller = app.Controller()
+                saved = json.loads(credentials.read_text(encoding="utf-8"))
+                self.assertTrue(controller.agent_authenticated(saved["token"]))
+                self.assertTrue(controller.status()["agent_managed"])
+                self.assertNotIn("token", controller.status()["config"])
+                controller.set_password("strong-test-password")
+                # A managed agent must interpret paths on the host, even if the app
+                # happens to have a directory with the same name.
+                visible = Path(tmp) / "chosen-host-folder"
+                visible.mkdir()
+                controller.update({"document_root": str(visible), "source_selection": "auto", "folders": [""]})
+                self.assertEqual(controller.config["source_mode"], "host_agent")
+                self.assertEqual(controller.config["host_root"], str(visible))
+                controller.close()
+                restored = app.Controller()
+                self.assertEqual(json.loads(credentials.read_text(encoding="utf-8")), saved)
+                self.assertTrue(restored.agent_authenticated(saved["token"]))
+                rotated = restored.agent_pair()["token"]
+                self.assertEqual(json.loads(credentials.read_text(encoding="utf-8"))["token"], rotated)
+                self.assertFalse(restored.agent_authenticated(saved["token"]))
+                restored.close()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 import ipaddress
 import hashlib
 import hmac
-import io
 import json
 import math
 import os
@@ -14,7 +13,6 @@ import sys
 import threading
 import time
 import urllib.request
-import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -33,6 +31,7 @@ CONFIG = DATA / "config.json"
 AUTH = DATA / "auth.json"
 AGENT_AUTH = DATA / "agent-auth.json"
 AGENT_MANIFEST = DATA / "agent-manifest.json"
+AUTO_AGENT_CONFIG = Path(os.environ["AUTO_HOST_AGENT_CONFIG"]) if os.getenv("AUTO_HOST_AGENT_CONFIG") else None
 POLICY = DATA / "index-policy.yaml"
 DEFAULT_POLICY = ROOT / "mcp" / "index-policy.yaml"
 HTML = Path(__file__).with_name("webui.html")
@@ -183,6 +182,8 @@ class Controller:
         self.ingest = None
         result_file = DATA / "last-result.json"
         self.last_result = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else None
+        if AUTO_AGENT_CONFIG is not None:
+            self.setup_auto_agent()
         if Path("/qdrant/qdrant").exists() and self.config["qdrant_enabled"]:
             self._start_qdrant()
         if self.config["mcp_enabled"] and (not Path("/qdrant/qdrant").exists() or self.config["qdrant_enabled"]):
@@ -252,8 +253,32 @@ class Controller:
             tmp.replace(AGENT_AUTH)
             if os.name == "posix":
                 AGENT_AUTH.chmod(0o600)
+            if AUTO_AGENT_CONFIG is not None:
+                self.save_auto_agent(token)
             self.agent_seen_at = 0
         return {"token": token}
+
+    def save_auto_agent(self, token):
+        AUTO_AGENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        tmp = AUTO_AGENT_CONFIG.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"url": "http://127.0.0.1:8080", "token": token}), encoding="utf-8")
+        if os.name == "posix":
+            tmp.chmod(0o600)
+        tmp.replace(AUTO_AGENT_CONFIG)
+
+    def setup_auto_agent(self):
+        with self.lock:
+            if AUTO_AGENT_CONFIG.exists():
+                saved = json.loads(AUTO_AGENT_CONFIG.read_text(encoding="utf-8"))
+                if self.agent_authenticated(saved.get("token")):
+                    return
+            token = secrets.token_urlsafe(48)
+            tmp = AGENT_AUTH.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"sha256": hashlib.sha256(token.encode()).hexdigest()}), encoding="utf-8")
+            if os.name == "posix":
+                tmp.chmod(0o600)
+            tmp.replace(AGENT_AUTH)
+            self.save_auto_agent(token)
 
     def agent_authenticated(self, token):
         if not isinstance(token, str) or not AGENT_AUTH.exists():
@@ -264,7 +289,7 @@ class Controller:
     def agent_task(self):
         with self.lock:
             self.agent_seen_at = time.time()
-            return {"source_mode": self.config["source_mode"], "host_root": self.config["host_root"], "revision": self.config["sync_revision"], "sync_request": self.config["sync_request"], "policy": yaml.safe_load(POLICY.read_text(encoding="utf-8"))}
+            return {"source_mode": self.config["source_mode"], "host_root": self.config["host_root"], "revision": self.config["sync_revision"], "sync_request": self.config["sync_request"], "index_running": bool(self.ingest and self.ingest.poll() is None), "policy": yaml.safe_load(POLICY.read_text(encoding="utf-8"))}
 
     def request_agent_sync(self):
         with self.lock:
@@ -436,7 +461,7 @@ class Controller:
         if "document_root" in values:
             chosen = host_root(values["document_root"])
             visible = Path(chosen).is_absolute() and Path(chosen).exists()
-            mode = ("container" if visible else "host_agent") if selection == "auto" else selection
+            mode = ("host_agent" if AUTO_AGENT_CONFIG is not None or not visible else "container") if selection == "auto" else selection
             values = {**values, "host_root" if mode == "host_agent" else "source_root": chosen}
         else:
             # Retain compatibility with clients that explicitly select a source mode.
@@ -449,7 +474,7 @@ class Controller:
             raise ValueError("Invalid document source mode")
         if mode == "host_agent":
             if not self.password_enabled():
-                raise ValueError("This folder is on the host. Enable dashboard login, then connect the host service from Document folders.")
+                raise ValueError("Enable dashboard login before selecting a host folder.")
             selected_host = host_root(values.get("host_root", self.config["host_root"]))
             selected_root = HOST_SOURCE
             selected_root.mkdir(parents=True, exist_ok=True)
@@ -578,6 +603,7 @@ class Controller:
                 "source_ready": source_ready,
                 "agent_connected": time.time() - self.agent_seen_at < 60,
                 "agent_paired": AGENT_AUTH.exists(),
+                "agent_managed": AUTO_AGENT_CONFIG is not None,
                 "agent_synced": self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress,
                 "agent_syncing": self.sync_in_progress,
                 "agent_error": self.agent_error_text,
@@ -674,12 +700,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/status":
             self.send(200, json.dumps(controller.status()))
-        elif self.path == "/host-agent.zip":
-            bundle = io.BytesIO()
-            with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
-                archive.write(ROOT / "host_agent.py", "host_agent.py")
-                archive.write(ROOT / "mcp" / "host_sync.py", "mcp/host_sync.py")
-            self.send(200, bundle.getvalue(), "application/zip")
         elif self.path == "/api/policy":
             content = POLICY.read_text(encoding="utf-8")
             self.send(200, json.dumps({"content": content, "policy": yaml.safe_load(content)}))

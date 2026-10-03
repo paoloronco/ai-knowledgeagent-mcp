@@ -14,7 +14,7 @@ function dashboard(config, connected = false) {
     classList: {toggle() {}, remove() {}, add() {}}, replaceChildren() {}, scrollTo() {}
   }]));
   const calls = [];
-  const status = {config: {...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected,
+  const status = {config: {...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected, agent_managed: true,
     source_ready: connected || config.source_mode === 'container', agent_file_count: 2, agent_sync_request_completed: 1};
   const context = vm.createContext({
     document: {getElementById: id => elements[id] || null, querySelectorAll: () => [],
@@ -52,8 +52,8 @@ test('saving an arbitrary root uses automatic selection despite a legacy contain
     document_root: '/mnt/documents', source_selection: 'auto', folders: [''], interval_hours: 0
   });
   assert.equal(elements['dashboard-source-root'].value, '/mnt/documents');
-  assert.match(elements['setup-source-status'].textContent, /\/mnt\/documents.*disconnected/i);
-  assert.equal(elements['setup-host-connection'].open, true);
+  assert.match(elements['setup-source-status'].textContent, /\/mnt\/documents.*Automatic host agent/i);
+  assert.doesNotMatch(html, /host_agent\.py install|Generate pairing key|Download the host service/);
 });
 
 test('Next keeps setup on the folder step and explains a missing host service immediately', async () => {
@@ -62,7 +62,7 @@ test('Next keeps setup on the folder step and explains a missing host service im
   await vm.runInContext('saveSource(true, true)', context);
   assert.equal(calls.some(x => x.route === '/api/onboarding/progress'), false);
   assert.equal(calls.some(x => x.route === '/api/agent/refresh'), false);
-  assert.match(elements.message.textContent, /Connect the host service/);
+  assert.match(elements.message.textContent, /host-agent Docker service/);
 });
 
 test('Next verifies the selected host folder before advancing to indexing policy', async () => {

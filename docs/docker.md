@@ -1,6 +1,6 @@
 # Docker deployment notes
 
-The one-command Compose setup is in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, synchronized host documents, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
+The one-command Compose setup is in the [root README](../README.md). On Linux/NAS it starts the app and its host agent automatically. The app starts Qdrant and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, and synchronized documents are under `/data`. A third volume retains the agent connection.
 
 ## Switching an existing `docker run` installation to Compose
 
@@ -28,33 +28,23 @@ Keep those volumes; removing them loses the dashboard settings, indexing state, 
 
 ## Select a host folder without changing Docker
 
-In **Document folders**, enter any absolute **Document root path**, such as `/mnt/documents`, `/mnt/knowledge`, or `C:\Users\Name\Documents`, and click **+**. With the default **Automatic** location, the app uses a folder already visible inside the container directly; other paths are sent to the host service. Existing installations also use this automatic selection when you save a new path.
+With the standard Compose setup on Linux/NAS:
 
-If **Host service disconnected** appears under the path, enable dashboard login and open **Connect host service** in the same section:
+1. Open the dashboard and enable login during onboarding.
+2. In **Document folders**, enter any absolute **Document root path**, such as `/mnt/documents`, `/mnt/knowledge`, or `/home/user/Documents`, and click **+**.
+3. Wait for **Folder ready**, then continue with **Next**.
 
-1. Download the host service ZIP from the dashboard and extract it on the computer running Docker.
-2. Generate a pairing key.
-3. With Python 3.10+ installed on that computer, run the following command from the extracted folder and paste the key when prompted:
+Compose starts the host agent automatically and the app provides its connection credentials through a private Docker volume. Python, native host services, downloads, and manual pairing are not required. With **Automatic** document location, the root is interpreted on the Linux host. To use an existing app-container mount instead, explicitly select **Folder already mounted inside the container**.
 
-```bash
-python host_agent.py install --url http://127.0.0.1:8080
-```
+The agent receives the Linux host filesystem at `/host` through a [read-only bind mount](https://docs.docker.com/engine/storage/bind-mounts/#use-a-read-only-bind-mount). It reads only the selected root, applies the indexing policy before transfer, and copies changed eligible documents into the app's persistent storage. Host symlinks are resolved within the host filesystem and restricted directories remain excluded. `/proc`, `/sys`, `/dev`, and `/run` are masked. The agent has no Docker socket and publishes no ports.
 
-Install the service once. It reads the selected host folder and synchronizes eligible documents into the app's persistent storage. Changing the root from the dashboard requires no Docker mount changes or container restart. The source folder stays on the host at the path you chose; the container indexes the synchronized copy.
+Changing the root from the dashboard requires no Docker configuration changes or container restart. The source stays at the chosen host path; indexing uses the synchronized copy. Mount external drives and network shares on the NAS before starting the stack so they are included in the agent's host mount. On kernels before Linux 5.12, Docker may retain write access on nested mounts despite a read-only parent mount; use Linux 5.12+ for recursive read-only protection.
 
-The status under the path shows connection errors, synchronization progress, and the eligible document count. **Next** verifies the host folder before continuing onboarding. A missing service is reported immediately, and inaccessible folders report their read error instead of appearing empty.
+The status under the path shows connection errors, synchronization progress, and the eligible document count. **Next** verifies the folder before continuing. The agent rescans every five minutes, responds to source changes and **Sync folder now**, and pauses synchronization while indexing runs. Scheduled indexing uses the existing incremental hash state, so unchanged documents are not embedded again.
 
-For installation from a repository checkout, use:
+Check the agent with `docker compose logs host-agent`. To restart it, use `docker compose restart host-agent`. The connection credentials are retained in `host_agent_data`, and the app stores only their hash in `app_data`. A Compose upgrade starts the agent without requiring user installation. Keep the existing app and Qdrant volumes during migration.
 
-```bash
-git clone https://github.com/paoloronco/ai-knowledgeagent-mcp.git
-cd ai-knowledgeagent-mcp
-python knowledge-mcp/host_agent.py install --url http://127.0.0.1:8080
-```
-
-The host agent runs under your host user account. It polls the dashboard, applies the indexing policy before transfer, and copies only changed eligible documents. It checks for additions and deletions every five minutes. The dashboard blocks indexing until the selected folder has synchronized and the agent is connected. Scheduled indexing then uses the existing incremental hash state, so unchanged documents are not embedded again. You can force host access with **Folder on the Docker host** in **Document access settings** if the same path also exists inside the container.
-
-The agent stores its pairing key in `~/.config/knowledge-mcp/agent.json`, logs to `~/.config/knowledge-mcp/agent.log`, and installs its Python files under `~/.config/knowledge-mcp/runtime`. The downloaded ZIP and extracted folder can be removed after installation. On Linux, `install` creates a systemd user service and tries to enable lingering so it starts at boot; if it cannot, it prints the one-time `sudo loginctl enable-linger USER` command. Use `systemctl --user status knowledge-mcp-agent.service` to check it. On Windows, `install` creates a scheduled task that starts at sign-in. The host user must have read access to the chosen folder. To rotate the key, generate another in the dashboard and run `install` again. Treat the app volume as private: it contains a copy of eligible host documents.
+This automatic setup targets Docker Engine on Linux/NAS. Docker Desktop on Windows or macOS requires separate native filesystem sharing and is not covered by mounting the Linux root. Starting only the app image with a bare `docker run` does not provide host access; use the supplied Compose setup.
 
 ## Compose with an existing document folder
 
