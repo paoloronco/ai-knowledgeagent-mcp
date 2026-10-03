@@ -42,16 +42,47 @@ jobs:
         run: |
           docker run -d --name knowledge-smoke -p 0.0.0.0:18080:8080 knowledge-mcp:smoke
           trap 'docker rm -f knowledge-smoke >/dev/null 2>&1 || true' EXIT
-          for i in {1..60}; do
-            if curl -fsS -H 'Host: 10.10.10.80:8080' http://127.0.0.1:18080/ 2>/dev/null | grep -q 'Local document indexing' \
-              && curl -fsS http://127.0.0.1:18080/api/status 2>/dev/null \
-                | python -c 'import json, sys; status = json.load(sys.stdin); sys.exit(not (status["qdrant_ready"] and status["mcp_running"]))' 2>/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs knowledge-smoke
-          exit 1
+          if ! python - <<'PY'
+          import json
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+
+          base = "http://127.0.0.1:18080"
+          for _ in range(90):
+              try:
+                  with urllib.request.urlopen(base + "/api/health", timeout=3) as response:
+                      if json.load(response)["qdrant_ready"]:
+                          break
+              except (OSError, urllib.error.HTTPError):
+                  pass
+              time.sleep(1)
+          else:
+              raise SystemExit("Qdrant and Web UI did not become healthy")
+
+          with urllib.request.urlopen(base) as response:
+              page = response.read().decode()
+          assert "Prima configurazione" in page
+          token = re.search(r"const token='([^']+)'", page).group(1)
+          request = urllib.request.Request(
+              base + "/api/service",
+              data=json.dumps({"name": "mcp", "action": "start"}).encode(),
+              headers={"Content-Type": "application/json", "X-Control-Token": token},
+          )
+          urllib.request.urlopen(request, timeout=10).close()
+          for _ in range(60):
+              with urllib.request.urlopen(base + "/api/status", timeout=3) as response:
+                  if json.load(response)["mcp_running"]:
+                      break
+              time.sleep(1)
+          else:
+              raise SystemExit("MCP did not start")
+          PY
+          then
+            docker logs knowledge-smoke
+            exit 1
+          fi
       - uses: docker/metadata-action@v6
         id: meta
         with:

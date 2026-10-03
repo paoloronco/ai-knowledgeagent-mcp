@@ -1,4 +1,4 @@
-"""Run the bundled Qdrant server and Web UI in one container."""
+"""Run the Web UI, which supervises bundled Qdrant and MCP."""
 
 import signal
 import subprocess
@@ -7,9 +7,8 @@ import time
 
 
 def main():
-    qdrant = subprocess.Popen(["/qdrant/qdrant"], cwd="/qdrant")
     webui = subprocess.Popen([sys.executable, "mcp/webui.py"], cwd="/app")
-    children = (qdrant, webui)
+    children = (webui,)
     stopping = False
 
     def stop(*_):
@@ -32,7 +31,7 @@ def main():
         stop()
         for child in children:
             try:
-                child.wait(timeout=8)
+                child.wait(timeout=25)
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait()

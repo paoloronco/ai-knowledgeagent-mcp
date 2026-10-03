@@ -33,6 +33,20 @@ class FakeModel:
 
 
 class CoreFlowTest(unittest.TestCase):
+    def test_selected_folders_and_file_exclusions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("team-a", "team-b", "sample-folder"):
+                (root / name).mkdir()
+                (root / name / "note.md").write_text("Visible content", encoding="utf-8")
+            (root / "team-a" / "skip.md").write_text("Excluded content", encoding="utf-8")
+            with patch.dict(os.environ, {"KNOWLEDGE_ROOT": str(root)}):
+                policy = ingest.load_policy()
+            policy["exclude_files"] = ["skip.md"]
+            with patch.dict(os.environ, {"INDEX_SOURCE_PATHS": json.dumps(["team-a", "team-b", "sample-folder"])}):
+                paths = ingest.discover_documents(policy)
+            self.assertEqual({p.relative_to(root).as_posix() for p in paths}, {"team-a/note.md", "team-b/note.md"})
+
     def test_expansion_stays_in_section(self):
         def point(section, chunk, text):
             return types.SimpleNamespace(payload={
@@ -72,6 +86,9 @@ class CoreFlowTest(unittest.TestCase):
                 ingest.main()
                 self.assertGreater(client.count(ingest.COLLECTION_NAME).count, 0)
                 self.assertEqual(len(json.loads(state_file.read_text(encoding="utf-8"))["documents"]), 1)
+                unchanged_state = state_file.read_bytes()
+                ingest.main()
+                self.assertEqual(state_file.read_bytes(), unchanged_state)
 
                 retrieval.client = client
                 retrieval.CORPUS = None

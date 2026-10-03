@@ -111,6 +111,10 @@ def is_candidate(path, root, policy):
     if any(part.casefold() in excluded_dirs for part in relative.parts[:-1]):
         return False
 
+    excluded_files = {name.casefold() for name in policy.get("exclude_files", [])}
+    if path.name.casefold() in excluded_files or relative.as_posix().casefold() in excluded_files:
+        return False
+
     # Extension policy
     extension = path.suffix.lower()
 
@@ -138,17 +142,26 @@ def is_candidate(path, root, policy):
 
 
 def discover_documents(policy):
-    root = Path(policy["knowledge_root"])
+    root = Path(policy["knowledge_root"]).resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"Knowledge root does not exist: {root}")
 
     candidates = []
 
-    for path in root.rglob("*"):
-        if is_candidate(path, root, policy):
-            candidates.append(path)
+    selected = json.loads(os.getenv("INDEX_SOURCE_PATHS", '[""]'))
+    if not isinstance(selected, list) or not selected or not all(isinstance(item, str) for item in selected):
+        raise ValueError("INDEX_SOURCE_PATHS must contain selected folders")
+    for item in selected:
+        if "\\" in item:
+            raise ValueError("Invalid selected folder")
+        folder = (root / item).resolve()
+        if not folder.is_relative_to(root) or not folder.is_dir():
+            raise ValueError(f"Selected folder is outside the document library: {item}")
+        for path in folder.rglob("*"):
+            if is_candidate(path, root, policy):
+                candidates.append(path)
 
-    return candidates
+    return sorted(set(candidates))
 
 
 def normalize_text(text):
@@ -434,7 +447,7 @@ def main():
     start_time = time.time()
 
     policy = load_policy()
-    root = Path(policy["knowledge_root"])
+    root = Path(policy["knowledge_root"]).resolve()
 
     print("Discovering candidate documents...")
 
@@ -485,6 +498,8 @@ def main():
     # -------------------------------------------------------------
 
     if args.dry_run:
+        if not unique_documents:
+            raise SystemExit("No eligible documents found for the dry run.")
         print("\nDRY RUN - no embeddings or Qdrant writes\n")
 
         total_chunks = 0
@@ -520,6 +535,8 @@ def main():
 
         print(f"Elapsed:          {elapsed:.1f}s")
 
+        if failed or hash_failures:
+            raise SystemExit(1)
         return
 
     # -------------------------------------------------------------
@@ -688,6 +705,8 @@ def main():
     print(f"Failed:            {failed_documents}")
     print(f"Chunks indexed:    {indexed_chunks}")
     print(f"Elapsed:           {elapsed / 60:.1f} min")
+    if failed_documents or hash_failures:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

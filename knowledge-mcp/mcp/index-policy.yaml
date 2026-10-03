@@ -37,6 +37,9 @@ exclude_top_level:
   - credentials
   - .env
 
+# Exact basenames or paths relative to the document library.
+exclude_files: []
+
 exclude_extensions:
   - .key
   - .pem

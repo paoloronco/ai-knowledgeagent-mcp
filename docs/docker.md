@@ -20,7 +20,11 @@ services:
           create_host_path: false
 ```
 
-Replace `source` with an existing absolute host path, then run `docker compose up -d`. The Web UI can select a subfolder within the mount. Browser uploads are disabled in this mode. On Windows, use a path such as `C:/Users/Name/Documents`.
+Replace `source` with an existing absolute host path, then run `docker compose up -d`. The Web UI can select the whole mount or several subfolders within it. Enter the path as seen inside the container (`/knowledge` in this example), not the host path. Browser uploads are disabled in this mode. On Windows, use a host source such as `C:/Users/Name/Documents`.
+
+To select folders from different host locations, mount each one under a separate subdirectory of the same container root (for example `/knowledge/team-a` and `/knowledge/team-b`) and set `KNOWLEDGE_ROOT=/knowledge`. The dashboard only accepts paths within that root.
+
+The dashboard health check is also available at `/api/health` on port 8080 and returns an error while Qdrant is unavailable. The image uses it for its Docker health status. Scheduled indexing rescans selected folders and skips parsing and embedding files already recorded unchanged in the persistent ingestion state.
 
 ## Upgrade from the older two-container Compose stack
 

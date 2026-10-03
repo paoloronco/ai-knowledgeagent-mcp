@@ -33,6 +33,22 @@ class AdminBoundaryTest(unittest.TestCase):
                 self.assertEqual(app.source_dir(""), source)
                 controller.close()
 
+    def test_legacy_subfolder_is_migrated_and_saved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            source = data / "documents"
+            (source / "notes").mkdir(parents=True)
+            (data / "config.json").write_text(json.dumps({"subfolder": "notes", "mcp_enabled": False}), encoding="utf-8")
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", source),
+                patch.object(app, "SOURCE", source), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "POLICY", data / "index-policy.yaml"),
+            ):
+                controller = app.Controller()
+                self.assertEqual(controller.config["folders"], ["notes"])
+                self.assertEqual(json.loads((data / "config.json").read_text())["folders"], ["notes"])
+                controller.close()
+
     def test_source_and_policy_cannot_escape_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source"
@@ -40,8 +56,12 @@ class AdminBoundaryTest(unittest.TestCase):
             (source / "notes").mkdir()
             with patch.object(app, "SOURCE", source):
                 self.assertEqual(app.source_dir("notes"), source / "notes")
+                self.assertEqual(app.source_dir(str(source)), source)
+                self.assertEqual(app.normalize_folders([str(source), "notes"]), ["", "notes"])
                 with self.assertRaises(ValueError):
                     app.source_dir("../elsewhere")
+                with self.assertRaises(ValueError):
+                    app.source_dir(str(source.parent))
 
         original = app.DEFAULT_POLICY.read_text(encoding="utf-8")
         app.validate_policy(original)
@@ -62,6 +82,7 @@ class AdminBoundaryTest(unittest.TestCase):
                 patch.object(app, "POLICY", data / "index-policy.yaml"),
                 patch.object(app, "SOURCE", source),
                 patch.object(app, "MANAGED_SOURCE", source),
+                patch.object(app, "AUTH", data / "auth.json"),
             ):
                 controller = app.Controller()
                 with patch.object(app, "controller", controller):
@@ -91,11 +112,55 @@ class AdminBoundaryTest(unittest.TestCase):
                         with urllib.request.urlopen(upload) as response:
                             self.assertEqual(response.status, 200)
                         self.assertEqual((source / "notes" / "example.md").read_bytes(), b"Example document")
+                        config = {"folders": [str(source / "notes")], "interval_hours": 2}
+                        request = urllib.request.Request(url + "/api/config", data=json.dumps(config).encode(), headers={"Content-Type": "application/json", "X-Control-Token": app.TOKEN})
+                        with urllib.request.urlopen(request) as response:
+                            self.assertEqual(json.load(response)["folders"], ["notes"])
+                        self.assertEqual(json.loads((data / "config.json").read_text())["folders"], ["notes"])
                         for path in ("..%2Fescape.md", "sample-folder%2Fprivate.md", "notes%2Fsecret.pem"):
                             denied_upload = urllib.request.Request(url + "/api/upload?path=" + path, data=b"secret", headers={"X-Control-Token": app.TOKEN})
                             with self.assertRaises(urllib.error.HTTPError) as denied:
                                 urllib.request.urlopen(denied_upload)
                             self.assertEqual(denied.exception.code, 400)
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                        controller.close()
+
+    def test_password_blocks_status_and_changes_until_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            source = data / "documents"
+            source.mkdir()
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", source),
+                patch.object(app, "SOURCE", source), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "AUTH", data / "auth.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
+            ):
+                controller = app.Controller()
+                controller.set_password("long-test-password")
+                with patch.object(app, "controller", controller):
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        url = f"http://127.0.0.1:{server.server_port}"
+                        with urllib.request.urlopen(url) as response:
+                            self.assertNotIn(app.TOKEN, response.read().decode())
+                        with self.assertRaises(urllib.error.HTTPError) as denied:
+                            urllib.request.urlopen(url + "/api/status")
+                        self.assertEqual(denied.exception.code, 401)
+                        try:
+                            with urllib.request.urlopen(url + "/api/health") as health:
+                                self.assertEqual(health.status, 200)
+                        except urllib.error.HTTPError as unhealthy:
+                            self.assertEqual(unhealthy.code, 503)
+                        request = urllib.request.Request(url + "/api/login", data=json.dumps({"password": "long-test-password"}).encode(), headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(request) as response:
+                            cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                        request = urllib.request.Request(url + "/api/status", headers={"Cookie": cookie})
+                        with urllib.request.urlopen(request) as response:
+                            self.assertEqual(response.status, 200)
                     finally:
                         server.shutdown()
                         server.server_close()
