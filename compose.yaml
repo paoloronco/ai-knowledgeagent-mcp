@@ -18,6 +18,7 @@ services:
 
   host-agent:
     image: paoloronco/knowledge-mcp:latest
+    container_name: knowledge-mcp-host-agent
     restart: unless-stopped
     command: ["python", "host_agent.py", "run", "--config", "/run/host-agent/agent.json", "--host-root", "/host", "--log-stdout"]
     network_mode: service:app

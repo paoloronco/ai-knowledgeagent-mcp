@@ -6,6 +6,8 @@ The image starts the Web UI and bundled Qdrant. Docker must configure port publi
 
 Alternatively, the repository's [compose.yaml](../compose.yaml) configures the app and automatic host agent together, publishes ports 8080 and 8000, and retains data in Docker volumes. From a local repository checkout:
 
+Compose creates two distinct containers from `paoloronco/knowledge-mcp:latest`: `knowledge-mcp` for the Web UI, MCP, and Qdrant, and `knowledge-mcp-host-agent` for `host_agent.py`. The host agent mounts the Linux host at `/host` read-only and shares the app container's network.
+
 ```bash
 docker compose up -d
 ```

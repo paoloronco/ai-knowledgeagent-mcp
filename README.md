@@ -9,14 +9,14 @@ Search your documents through an MCP server. The Docker image includes the dashb
 Download the image, then start the complete application on a Linux Docker host:
 
 ```bash
-docker pull paoloronco/knowledge-mcp
+docker pull paoloronco/knowledge-mcp:latest
 docker run -d --name knowledge-mcp --restart unless-stopped \
   -p 8080:8080 -p 8000:8000 \
   -e AUTO_HOST_AGENT_CONFIG=/run/host-agent/agent.json \
   -v knowledge_app:/data \
   -v knowledge_qdrant:/qdrant/storage \
   -v knowledge_agent:/run/host-agent \
-  paoloronco/knowledge-mcp
+  paoloronco/knowledge-mcp:latest
 ```
 
 Open `http://HOST_IP:8080` for the Web UI. Qdrant stays on container loopback; port 8000 serves MCP after onboarding and indexing. The named volumes preserve settings, documents, model cache, and Qdrant data. Docker restarts the container after a process failure or host reboot; the app also restarts a failed Qdrant or enabled MCP child process. Review the [indexing policy](knowledge-mcp/mcp/index-policy.yaml) before indexing.
@@ -34,9 +34,11 @@ docker run -d --name knowledge-mcp-host-agent --restart unless-stopped \
   --tmpfs /host/sys:ro,noexec,nosuid,size=1m \
   --tmpfs /host/dev:ro,noexec,nosuid,size=1m \
   --tmpfs /host/run:ro,noexec,nosuid,size=1m \
-  paoloronco/knowledge-mcp \
+  paoloronco/knowledge-mcp:latest \
   python host_agent.py run --config /run/host-agent/agent.json --host-root /host --log-stdout
 ```
+
+Both containers use `paoloronco/knowledge-mcp:latest`, but have separate names and roles: `knowledge-mcp` runs the Web UI, MCP, and Qdrant; `knowledge-mcp-host-agent` runs `host_agent.py`, reads the Linux host through `/host`, and shares the app container's network. The [Compose deployment](docs/docker.md#linuxnas-deployment) uses the same names and roles.
 
 The companion reads the selected Linux folder through a read-only host mount, applies the indexing policy, and synchronizes eligible documents into the app volume. It exposes no port and needs no Docker socket. Select a folder such as `/mnt/documents` in the Web UI; dashboard login is optional. See [deployment and migration notes](docs/docker.md) for updates and the alternative Compose setup.
 

@@ -40,10 +40,14 @@ jobs:
           config = json.loads((Path(os.environ["RUNNER_TEMP"]) / "knowledge-compose.json").read_text())
           app = config["services"]["app"]
           assert app["container_name"] == "knowledge-mcp"
+          assert app["image"] == "paoloronco/knowledge-mcp:latest"
           assert app["restart"] == "unless-stopped"
           assert {(port["published"], port["target"]) for port in app["ports"]} == {("8080", 8080), ("8000", 8000)}
           assert {(volume["source"], volume["target"]) for volume in app["volumes"]} == {("app_data", "/data"), ("qdrant_data", "/qdrant/storage"), ("host_agent_data", "/run/host-agent")}
           agent = config["services"]["host-agent"]
+          assert agent["container_name"] == "knowledge-mcp-host-agent"
+          assert agent["image"] == app["image"]
+          assert agent["command"][:3] == ["python", "host_agent.py", "run"]
           assert agent["read_only"] and agent["network_mode"] == "service:app"
           assert agent["cap_drop"] == ["ALL"] and agent["cap_add"] == ["DAC_READ_SEARCH"]
           assert any(mount["source"] == "/" and mount["target"] == "/host" and mount["read_only"] for mount in agent["volumes"])
@@ -72,6 +76,7 @@ jobs:
                 - $RUNNER_TEMP/knowledge-smoke-docs:/mnt/knowledge:ro
             host-agent:
               image: knowledge-mcp:smoke
+              container_name: knowledge-smoke-host-agent
           EOF
           trap 'docker compose -p knowledge-smoke -f compose.yaml -f "$RUNNER_TEMP/knowledge-smoke.yaml" down -v >/dev/null 2>&1 || true' EXIT
           docker compose -p knowledge-smoke -f compose.yaml -f "$RUNNER_TEMP/knowledge-smoke.yaml" up -d
