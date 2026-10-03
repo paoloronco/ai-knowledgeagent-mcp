@@ -548,12 +548,25 @@ class Controller:
                 self._stop_mcp()
                 self._start_mcp()
 
+    def _restart_failed_services(self):
+        bundled_qdrant = Path("/qdrant/qdrant").exists()
+        if self.config["qdrant_enabled"] and bundled_qdrant and (self.qdrant is None or self.qdrant.poll() is not None):
+            self._start_qdrant()
+        if self.config["mcp_enabled"] and (not bundled_qdrant or self.config["qdrant_enabled"]) and (self.mcp is None or self.mcp.poll() is not None):
+            self._start_mcp()
+
     def _schedule(self):
         while not self.stopping:
             time.sleep(30)
             with self.lock:
                 if self.stopping:
                     return
+                # Docker restarts this container when the Web UI exits. Keep the
+                # separately managed child services running after their own crash.
+                try:
+                    self._restart_failed_services()
+                except OSError as error:
+                    print(f"Could not restart a service: {error}", file=sys.stderr, flush=True)
                 hours = self.config["interval_hours"] if self.config["onboarding_complete"] else 0
                 due_at = self.config["last_run_at"] + hours * 3600 if hours else 0
                 due = hours and time.time() >= due_at

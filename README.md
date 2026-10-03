@@ -6,16 +6,41 @@ Search your documents through an MCP server. The Docker image includes the dashb
 
 ## Docker image
 
-Download and start the image:
+Download the image, then start the complete application on a Linux Docker host:
 
 ```bash
 docker pull paoloronco/knowledge-mcp
-docker run paoloronco/knowledge-mcp
+docker run -d --name knowledge-mcp --restart unless-stopped \
+  -p 8080:8080 -p 8000:8000 \
+  -e AUTO_HOST_AGENT_CONFIG=/run/host-agent/agent.json \
+  -v knowledge_app:/data \
+  -v knowledge_qdrant:/qdrant/storage \
+  -v knowledge_agent:/run/host-agent \
+  paoloronco/knowledge-mcp
 ```
 
-These commands start the services inside the container in the foreground. They do **not** publish the dashboard or MCP ports or grant access to host folders. Docker requires these settings when creating the container; they cannot be supplied as image defaults. See Docker's [port publication](https://docs.docker.com/reference/dockerfile/#expose) and [host folder mounts](https://docs.docker.com/engine/storage/bind-mounts/) documentation.
+Open `http://HOST_IP:8080` for the Web UI. Qdrant stays on container loopback; port 8000 serves MCP after onboarding and indexing. The named volumes preserve settings, documents, model cache, and Qdrant data. Docker restarts the container after a process failure or host reboot; the app also restarts a failed Qdrant or enabled MCP child process. Review the [indexing policy](knowledge-mcp/mcp/index-policy.yaml) before indexing.
 
-For a deployment with dashboard access, persistent storage, and automatic Linux/NAS host folder access, see the [deployment guide](docs/docker.md). Keep existing data volumes when updating an installation.
+To let the Web UI select folders on the Linux host, install its companion container with this **one command on the same host**:
+
+```bash
+docker run -d --name knowledge-mcp-host-agent --restart unless-stopped \
+  --network container:knowledge-mcp --read-only \
+  --cap-drop ALL --cap-add DAC_READ_SEARCH \
+  --security-opt no-new-privileges \
+  -v knowledge_agent:/run/host-agent:ro \
+  -v /:/host:ro \
+  --tmpfs /host/proc:ro,noexec,nosuid,size=1m \
+  --tmpfs /host/sys:ro,noexec,nosuid,size=1m \
+  --tmpfs /host/dev:ro,noexec,nosuid,size=1m \
+  --tmpfs /host/run:ro,noexec,nosuid,size=1m \
+  paoloronco/knowledge-mcp \
+  python host_agent.py run --config /run/host-agent/agent.json --host-root /host --log-stdout
+```
+
+The companion reads the selected Linux folder through a read-only host mount, applies the indexing policy, and synchronizes eligible documents into the app volume. It exposes no port and needs no Docker socket. Select a folder such as `/mnt/documents` in the Web UI after enabling login. See [deployment and migration notes](docs/docker.md) for updates and the alternative Compose setup.
+
+The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isolated foreground container. An image cannot set the host's published ports, mounts, or restart policy; Docker requires those options at container creation. See Docker's [port publication](https://docs.docker.com/get-started/docker-concepts/running-containers/publishing-ports/) and [restart policy](https://docs.docker.com/engine/containers/start-containers-automatically/) documentation.
 
 ## Dashboard
 
@@ -24,7 +49,7 @@ Once the application has been deployed with networking and document access confi
 - Open `http://HOST_IP:8080`.
 - Onboarding guides you through dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a dry-run test, and initial indexing.
 - Enter a **Document root path**, such as `/mnt/documents`, and click **+**. With the automatic host agent connected, the path refers to a folder on the Linux host.
-- After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`.
+- After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.
 - Use the dashboard to manage services and schedule incremental indexing.
 - Persistent Docker volumes retain documents, settings, indexing state, the model cache, Qdrant data, and the agent connection across container updates.
 

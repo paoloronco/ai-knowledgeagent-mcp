@@ -18,6 +18,28 @@ import host_agent
 
 
 class AdminBoundaryTest(unittest.TestCase):
+    def test_failed_services_restart_only_while_enabled(self):
+        controller = object.__new__(app.Controller)
+        controller.config = {"qdrant_enabled": True, "mcp_enabled": True}
+        controller.qdrant = Mock()
+        controller.qdrant.poll.return_value = 1
+        controller.mcp = Mock()
+        controller.mcp.poll.return_value = 1
+        with (
+            patch.object(app.Path, "exists", return_value=True),
+            patch.object(controller, "_start_qdrant") as start_qdrant,
+            patch.object(controller, "_start_mcp") as start_mcp,
+        ):
+            controller._restart_failed_services()
+            start_qdrant.assert_called_once_with()
+            start_mcp.assert_called_once_with()
+            start_qdrant.reset_mock()
+            start_mcp.reset_mock()
+            controller.config["qdrant_enabled"] = False
+            controller._restart_failed_services()
+            start_qdrant.assert_not_called()
+            start_mcp.assert_not_called()
+
     def test_saved_policy_recovers_required_directory_exclusions(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp)

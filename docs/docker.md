@@ -1,10 +1,10 @@
 # Docker deployment notes
 
-The image starts the app and bundled Qdrant. Docker must configure port publication, persistent storage, and host folder access when creating the container. A bare `docker run paoloronco/knowledge-mcp` does not supply those settings.
+The image starts the Web UI and bundled Qdrant. Docker must configure port publication, persistent storage, and host folder access when creating containers. The [root README](../README.md#docker-image) gives complete `docker run` commands for the app and a separate Linux host agent. A bare `docker run paoloronco/knowledge-mcp` does not supply those settings.
 
 ## Linux/NAS deployment
 
-The repository's [compose.yaml](../compose.yaml) configures the app and automatic host agent, publishes ports 8080 and 8000, and retains data in Docker volumes. From a local repository checkout:
+Alternatively, the repository's [compose.yaml](../compose.yaml) configures the app and automatic host agent together, publishes ports 8080 and 8000, and retains data in Docker volumes. From a local repository checkout:
 
 ```bash
 docker compose up -d
@@ -12,9 +12,11 @@ docker compose up -d
 
 The app stores Qdrant data at `/qdrant/storage`. Settings, ingestion state, the model cache, and synchronized documents are under `/data`. A third volume retains the agent connection. To update, run `docker compose pull` followed by `docker compose up -d`. To stop the services, run `docker compose stop`.
 
+For the README's `docker run` installation, update by stopping and removing the host agent first, then the app container; pull the new image and repeat both README commands. Keep the three named volumes. Recreate the agent whenever you recreate the app container because it joins the app container's network namespace.
+
 ## Switching an existing `docker run` installation to Compose
 
-The earlier `docker run` example used volumes named `knowledge_app` and `knowledge_qdrant`. To reuse them, create `compose.override.yaml` beside `compose.yaml`:
+The README's `docker run` commands use volumes named `knowledge_app`, `knowledge_qdrant`, and `knowledge_agent`. To reuse them in Compose, create `compose.override.yaml` beside `compose.yaml`:
 
 ```yaml
 volumes:
@@ -24,11 +26,16 @@ volumes:
   qdrant_data:
     external: true
     name: knowledge_qdrant
+  host_agent_data:
+    external: true
+    name: knowledge_agent
 ```
 
-Stop and remove the old container, then start Compose:
+Stop and remove the old containers, then start Compose:
 
 ```bash
+docker stop -t 30 knowledge-mcp-host-agent
+docker rm knowledge-mcp-host-agent
 docker stop -t 30 knowledge-mcp
 docker rm knowledge-mcp
 docker compose up -d
@@ -54,7 +61,7 @@ The status under the path shows connection errors, synchronization progress, and
 
 Check the agent with `docker compose logs host-agent`. To restart it, use `docker compose restart host-agent`. The connection credentials are retained in `host_agent_data`, and the app stores only their hash in `app_data`. A Compose upgrade starts the agent without requiring user installation. Keep the existing app and Qdrant volumes during migration.
 
-This automatic setup targets Docker Engine on Linux/NAS. Docker Desktop on Windows or macOS requires separate native filesystem sharing and is not covered by mounting the Linux root. Starting only the app image with a bare `docker run` does not provide host access; use the supplied Compose setup.
+This automatic setup targets Docker Engine on Linux/NAS. Docker Desktop on Windows or macOS requires separate native filesystem sharing and is not covered by mounting the Linux root. The README's two-container `docker run` setup provides the same Linux host access without a repository checkout.
 
 ## Compose with an existing document folder
 
