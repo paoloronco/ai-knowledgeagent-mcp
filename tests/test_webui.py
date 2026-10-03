@@ -257,6 +257,10 @@ class AdminBoundaryTest(unittest.TestCase):
                         self.assertIn("Folder unavailable", controller.status()["agent_error"])
                         host_agent.sync(url, token, host_agent.request(url, token, "/api/agent/task"))
                         self.assertTrue(controller.status()["source_ready"])
+                        refresh_id = controller.request_agent_sync()["sync_request"]
+                        self.assertLess(controller.status()["agent_sync_request_completed"], refresh_id)
+                        host_agent.sync(url, token, host_agent.request(url, token, "/api/agent/task"))
+                        self.assertEqual(controller.status()["agent_sync_request_completed"], refresh_id)
                         bad = urllib.request.Request(url + "/api/agent/plan", data=b"{}", headers={"X-Agent-Token": "wrong"})
                         with self.assertRaises(urllib.error.HTTPError) as denied:
                             urllib.request.urlopen(bad)

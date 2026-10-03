@@ -79,7 +79,7 @@ def inventory(root, policy):
 
 def sync(base, token, task):
     folder, files = inventory(task["host_root"], task["policy"])
-    body = {"revision": task["revision"], "files": files}
+    body = {"revision": task["revision"], "sync_request": task["sync_request"], "files": files}
     missing = request(base, token, "/api/agent/plan", body)["missing"]
     for name in missing:
         document = folder.joinpath(*name.split("/"))

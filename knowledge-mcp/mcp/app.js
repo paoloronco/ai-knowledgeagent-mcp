@@ -145,12 +145,28 @@ async function savePolicy(advance) {
 }
 async function saveYaml() { try { await api('/api/policy', {content: $('policy-yaml').value}); await loadPolicy(); message('YAML saved.'); } catch (e) { message(e.message, true); } }
 async function service(name, action) { try { await api('/api/service', {name, action}); message(`${name}: ${action} requested.`); await refresh(); } catch (e) { message(e.message, true); } }
+async function waitForFreshHostSync() {
+  const before = await api('/api/status');
+  if (before.config.source_mode !== 'host_agent') return;
+  const request = await api('/api/agent/refresh', {});
+  message('Syncing the host folder before indexing…');
+  const deadline = Date.now() + 15 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const status = await api('/api/status');
+    if (status.agent_error) throw Error('Host sync failed: ' + status.agent_error);
+    if (status.config.source_mode !== 'host_agent' || status.config.sync_revision !== before.config.sync_revision) throw Error('Document source changed during sync');
+    if (status.source_ready && status.agent_sync_request_completed >= request.sync_request) return;
+  }
+  throw Error('Host sync did not finish. Check the agent status and log.');
+}
 async function runIndex(dry_run) {
-  try { await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
+  try { await waitForFreshHostSync(); await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
   catch (e) { message(e.message, true); }
 }
 async function startInitialIndex() {
   try {
+    await waitForFreshHostSync();
     await api('/api/index', {dry_run: false}); await api('/api/onboarding', {});
     sessionStorage.removeItem('knowledge-onboarding-step'); $('wizard').classList.add('hidden'); $('dashboard').classList.remove('hidden');
     message('Indexing started. Follow the log, then start MCP.'); await refresh();

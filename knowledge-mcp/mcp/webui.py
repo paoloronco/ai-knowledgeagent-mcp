@@ -247,7 +247,7 @@ class Controller:
                 raise ValueError("Select a host folder first")
             self.config["sync_request"] += 1
             self._save()
-            return {"requested": True}
+            return {"requested": True, "sync_request": self.config["sync_request"]}
 
     def agent_error(self, values):
         with self.lock:
@@ -259,11 +259,14 @@ class Controller:
     def agent_plan(self, values):
         files = values.get("files")
         revision = values.get("revision")
+        request_id = values.get("sync_request")
         if not isinstance(files, dict) or len(files) > 50000:
             raise ValueError("Invalid document inventory")
         with self.lock:
             if self.config["source_mode"] != "host_agent" or not self.config["host_root"] or revision != self.config["sync_revision"]:
                 raise ValueError("Host folder changed; retry the sync")
+            if type(request_id) is not int or not 0 <= request_id <= self.config["sync_request"]:
+                raise ValueError("Invalid host sync request")
             if self.ingest and self.ingest.poll() is None:
                 raise ValueError("Wait until indexing finishes before syncing")
             policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
@@ -308,11 +311,14 @@ class Controller:
     def agent_commit(self, values):
         files = values.get("files")
         revision = values.get("revision")
+        request_id = values.get("sync_request")
         if not isinstance(files, dict) or len(files) > 50000:
             raise ValueError("Invalid document inventory")
         with self.lock:
             if not self.sync_in_progress or revision != self.config["sync_revision"] or self.config["source_mode"] != "host_agent":
                 raise ValueError("No active host sync")
+            if type(request_id) is not int or not 0 <= request_id <= self.config["sync_request"]:
+                raise ValueError("Invalid host sync request")
             policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
             for name, item in files.items():
                 if not isinstance(item, dict) or not allowed_file(name, item.get("size"), policy) or not isinstance(item.get("sha256"), str):
@@ -332,9 +338,9 @@ class Controller:
                         path.rmdir()
             tmp = AGENT_MANIFEST.with_suffix(".tmp")
             synced_at = time.time()
-            tmp.write_text(json.dumps({"revision": revision, "files": files, "synced_at": synced_at}), encoding="utf-8")
+            tmp.write_text(json.dumps({"revision": revision, "sync_request": request_id, "files": files, "synced_at": synced_at}), encoding="utf-8")
             tmp.replace(AGENT_MANIFEST)
-            self.agent_manifest = {"revision": revision, "files": files, "synced_at": synced_at}
+            self.agent_manifest = {"revision": revision, "sync_request": request_id, "files": files, "synced_at": synced_at}
             self.sync_in_progress = False
             self.agent_error_text = ""
             return {"synced": len(files)}
@@ -532,6 +538,7 @@ class Controller:
                 "agent_syncing": self.sync_in_progress,
                 "agent_error": self.agent_error_text,
                 "agent_last_sync_at": self.agent_manifest.get("synced_at"),
+                "agent_sync_request_completed": self.agent_manifest.get("sync_request", -1),
                 "source_root": self.config["source_root"],
                 "last_result": self.last_result,
                 "next_run_at": self.config["last_run_at"] + self.config["interval_hours"] * 3600 if self.config["interval_hours"] else None,
