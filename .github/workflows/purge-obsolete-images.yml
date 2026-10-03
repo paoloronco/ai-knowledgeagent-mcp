@@ -1,0 +1,57 @@
+name: Purge obsolete Docker images
+
+on:
+  workflow_dispatch:
+    inputs:
+      digests:
+        description: Comma-separated untagged image manifest digests to remove
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete untagged image manifests
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE_DIGESTS: ${{ inputs.digests }}
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          repository = "paoloronco/knowledge-mcp"
+          scope = f"repository:{repository}:pull,push,delete"
+          auth_url = "https://auth.docker.io/token?" + urllib.parse.urlencode({"service": "registry.docker.io", "scope": scope})
+          credentials = base64.b64encode(f'{os.environ["DOCKERHUB_USERNAME"]}:{os.environ["DOCKERHUB_TOKEN"]}'.encode()).decode()
+          with urllib.request.urlopen(urllib.request.Request(auth_url, headers={"Authorization": f"Basic {credentials}"}), timeout=30) as response:
+              token = json.load(response)["token"]
+          registry = f"https://registry-1.docker.io/v2/{repository}/manifests/"
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json"}
+          with urllib.request.urlopen(urllib.request.Request(registry + "latest", headers=headers, method="HEAD"), timeout=30) as response:
+              current = response.headers["Docker-Content-Digest"]
+          digests = set(os.environ["IMAGE_DIGESTS"].split(","))
+          if not digests or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) for digest in digests):
+              raise SystemExit("Invalid manifest digest input")
+          if current in digests:
+              raise SystemExit("Refusing to remove the current latest image")
+          for digest in sorted(digests):
+              request = urllib.request.Request(registry + digest, headers=headers, method="DELETE")
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      print(f"{digest}: HTTP {response.status}")
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  print(f"{digest}: already absent")
+          PY
