@@ -18,6 +18,51 @@ import host_agent
 
 
 class AdminBoundaryTest(unittest.TestCase):
+    def test_host_folder_and_agent_pairing_work_without_dashboard_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", data / "documents"),
+                patch.object(app, "MANAGED_SOURCE", data / "documents"), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
+                patch.object(app, "AUTH", data / "auth.json"), patch.object(app, "AGENT_AUTH", data / "agent-auth.json"),
+                patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+                patch.object(app, "AUTO_AGENT_CONFIG", Path(tmp) / "agent" / "agent.json"),
+            ):
+                controller = app.Controller()
+                with patch.object(app, "controller", controller):
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        url = f"http://127.0.0.1:{server.server_port}"
+
+                        def post(route, body, cookie=""):
+                            headers = {"Content-Type": "application/json", "X-Control-Token": app.TOKEN}
+                            if cookie:
+                                headers["Cookie"] = cookie
+                            request = urllib.request.Request(url + route, data=json.dumps(body).encode(), headers=headers)
+                            return urllib.request.urlopen(request)
+
+                        with post("/api/config", {"document_root": "/mnt/documents", "source_selection": "auto", "folders": [""]}) as response:
+                            self.assertEqual(json.load(response)["host_root"], "/mnt/documents")
+                        with post("/api/agent/pair", {}) as response:
+                            self.assertTrue(controller.agent_authenticated(json.load(response)["token"]))
+                        self.assertFalse(controller.password_enabled())
+                        with post("/api/security", {"enabled": True, "password": "long-test-password"}):
+                            pass
+                        request = urllib.request.Request(url + "/api/login", data=json.dumps({"password": "long-test-password"}).encode(), headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(request) as response:
+                            cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                        with post("/api/security", {"enabled": False}, cookie):
+                            pass
+                        self.assertFalse(controller.password_enabled())
+                        self.assertEqual(controller.config["host_root"], "/mnt/documents")
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                controller.close()
+
     def test_failed_services_restart_only_while_enabled(self):
         controller = object.__new__(app.Controller)
         controller.config = {"qdrant_enabled": True, "mcp_enabled": True}

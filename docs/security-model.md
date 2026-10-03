@@ -3,7 +3,7 @@
 ## Boundaries
 
 - The dashboard has no browser document upload. Compose starts and connects the Linux host agent automatically. It receives read-only access to the host filesystem, reads only the selected root, and transfers policy-eligible documents into the app's persistent volume. Its root filesystem is read-only; it drops capabilities except `DAC_READ_SEARCH`, masks host runtime/system directories, and has no Docker socket. Legacy uploaded documents may also remain in the app volume. Treat the volumes as private data.
-- Host folder selection requires dashboard login. Automatic connection credentials stay in a private Docker volume and are stored hashed in the app volume. The agent shares the app's network namespace and communicates over loopback. It publishes no ports. Review the host read access in Compose before deploying; on Linux older than 5.12, nested bind mounts may remain writable.
+- Dashboard login is optional, including for host folder selection. Without it, anyone who can reach the dashboard can change its settings and select host folders. Automatic agent connection credentials stay in a private Docker volume and are stored hashed in the app volume. The agent shares the app's network namespace and communicates over loopback. It publishes no ports. Review the host read access in Compose before deploying; on Linux older than 5.12, nested bind mounts may remain writable.
 - Bind Qdrant to localhost. The application does not authenticate to Qdrant by default.
 - Docker publishes the Web UI and MCP server on the host's LAN interfaces. The Web UI can use a password; the MCP server has no built-in login. Limit access with a firewall and add an authenticated HTTPS proxy or Cloudflare Access before Internet exposure. Use HTTPS when entering the Web UI password over a network.
 - Review index-policy.yaml before ingestion. Directory and extension filters are the first boundary. Retrieval repeats restricted-path filtering, including Windows-style separators, as a second boundary.
@@ -16,7 +16,7 @@
 1. If using a host source folder through the agent, check its connection and synchronization status before indexing. If using a bind mount, verify that it is read-only.
 2. Inspect the ingestion policy and a dry-run sample before the first full index.
 3. Keep .env, Cloudflare tokens, the Qdrant volume and ingestion state outside version control.
-4. Test authentication on the public hostname before giving it to a client.
+4. Test the intended access controls on the public hostname before giving it to a client.
 5. Rotate any exposed credential; redaction does not undo exposure.
 
 The [Cloudflare guide](cloudflare-access.md) covers one possible access layer. No specific homelab address, Google project, or Cloudflare token is required by this repository.

@@ -103,3 +103,13 @@ test('Service health shows Start Qdrant only while managed Qdrant is unavailable
   await vm.runInContext('refresh()', context);
   assert.equal(elements['wizard-qdrant'].classList.contains('hidden'), true);
 });
+
+test('onboarding continues with dashboard login disabled', async () => {
+  const {elements, calls, context} = dashboard({...legacy, setup_step: 0});
+  elements['login-enabled'].checked = false;
+  vm.runInContext('wizardStep = 0', context);
+  await vm.runInContext('setupSecurity()', context);
+  assert.equal(calls.some(x => x.route === '/api/security'), false);
+  assert.equal(calls.find(x => x.route === '/api/onboarding/progress').body.step, 1);
+  assert.doesNotMatch(html, /Enable login to select folders on the Docker host/);
+});

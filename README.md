@@ -38,7 +38,7 @@ docker run -d --name knowledge-mcp-host-agent --restart unless-stopped \
   python host_agent.py run --config /run/host-agent/agent.json --host-root /host --log-stdout
 ```
 
-The companion reads the selected Linux folder through a read-only host mount, applies the indexing policy, and synchronizes eligible documents into the app volume. It exposes no port and needs no Docker socket. Select a folder such as `/mnt/documents` in the Web UI after enabling login. See [deployment and migration notes](docs/docker.md) for updates and the alternative Compose setup.
+The companion reads the selected Linux folder through a read-only host mount, applies the indexing policy, and synchronizes eligible documents into the app volume. It exposes no port and needs no Docker socket. Select a folder such as `/mnt/documents` in the Web UI; dashboard login is optional. See [deployment and migration notes](docs/docker.md) for updates and the alternative Compose setup.
 
 The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isolated foreground container. An image cannot set the host's published ports, mounts, or restart policy; Docker requires those options at container creation. See Docker's [port publication](https://docs.docker.com/get-started/docker-concepts/running-containers/publishing-ports/) and [restart policy](https://docs.docker.com/engine/containers/start-containers-automatically/) documentation.
 
@@ -47,7 +47,7 @@ The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isol
 Once the application has been deployed with networking and document access configured:
 
 - Open `http://HOST_IP:8080`.
-- Onboarding guides you through dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a dry-run test, and initial indexing.
+- Onboarding guides you through optional dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a dry-run test, and initial indexing. If you skip login, anyone who can reach port 8080 can manage the dashboard.
 - Enter a **Document root path**, such as `/mnt/documents`, and click **+**. With the automatic host agent connected, the path refers to a folder on the Linux host.
 - After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.
 - Use the dashboard to manage services and schedule incremental indexing.

@@ -224,7 +224,7 @@ async function start() {
     $('app-view').classList.remove('hidden'); $('logout').classList.toggle('hidden', !auth.required);
     $('auth-state').textContent = auth.required ? 'Login enabled' : 'Login disabled';
     current = await api('/api/status');
-    $('login-enabled').checked = auth.required || current.config.setup_step === 0;
+    $('login-enabled').checked = auth.required;
     fillSourceInputs();
     $('interval').value = current.config.interval_hours;
     await loadPolicy();

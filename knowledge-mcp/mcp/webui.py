@@ -244,8 +244,6 @@ class Controller:
         return {**os.environ, "KNOWLEDGE_ROOT": self.config["source_root"], "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY)}
 
     def agent_pair(self):
-        if not self.password_enabled():
-            raise ValueError("Enable dashboard login before pairing the host agent")
         token = secrets.token_urlsafe(48)
         with self.lock:
             tmp = AGENT_AUTH.with_suffix(".tmp")
@@ -473,8 +471,6 @@ class Controller:
         if mode not in ("host_agent", "container"):
             raise ValueError("Invalid document source mode")
         if mode == "host_agent":
-            if not self.password_enabled():
-                raise ValueError("Enable dashboard login before selecting a host folder.")
             selected_host = host_root(values.get("host_root", self.config["host_root"]))
             selected_root = HOST_SOURCE
             selected_root.mkdir(parents=True, exist_ok=True)
@@ -821,8 +817,6 @@ class Handler(BaseHTTPRequestHandler):
                 if values.get("enabled") is True:
                     controller.set_password(values.get("password"))
                 elif values.get("enabled") is False:
-                    if controller.config["source_mode"] == "host_agent" and controller.config["host_root"]:
-                        raise ValueError("Keep dashboard login enabled while using a host folder")
                     AUTH.unlink(missing_ok=True)
                     with controller.lock:
                         controller.sessions.clear()

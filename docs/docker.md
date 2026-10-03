@@ -47,7 +47,7 @@ Keep those volumes; removing them loses the dashboard settings, indexing state, 
 
 With the standard Compose setup on Linux/NAS:
 
-1. Open the dashboard and enable login during onboarding.
+1. Open the dashboard. Login is optional during onboarding.
 2. In **Document folders**, enter any absolute **Document root path**, such as `/mnt/documents`, `/mnt/knowledge`, or `/home/user/Documents`, and click **+**.
 3. Wait for **Folder ready**, then continue with **Next**.
 
