@@ -161,6 +161,8 @@ jobs:
           else:
               raise SystemExit("Dashboard did not restart")
           assert wait_source(str(next_root))["agent_file_count"] == 1
+          with urllib.request.urlopen(urllib.request.Request(base, headers={"Cookie": cookie}), timeout=3) as response:
+              token = re.search(r"const token='([^']+)'", response.read().decode()).group(1)
           request = urllib.request.Request(base + "/api/upload?path=blocked.md", data=b"blocked", headers={"X-Control-Token": token, "Cookie": cookie})
           try:
               urllib.request.urlopen(request, timeout=3)
