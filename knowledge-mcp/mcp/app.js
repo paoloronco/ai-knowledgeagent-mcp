@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 let current = null, policy = null, selectedFolders = [''], availableFolders = [''], loadedSyncRevision = null, wizardStep = 0, authRequired = false;
+let messageTimer = null, refreshError = null;
 const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Dry-run test', 'Initial indexing'];
 
 async function api(path, data) {
@@ -10,7 +11,17 @@ async function api(path, data) {
   if (!response.ok) throw Error(body.error || 'Request failed');
   return body;
 }
-function message(value, error = false) { $('message').textContent = value; $('message').style.color = error ? '#a32121' : '#176438'; }
+function message(value, error = false) {
+  clearTimeout(messageTimer);
+  const notice = $('message');
+  notice.textContent = value;
+  notice.classList.toggle('error', error);
+  notice.classList.toggle('visible', Boolean(value));
+  messageTimer = setTimeout(() => {
+    notice.classList.remove('visible');
+    notice.textContent = '';
+  }, error ? 7000 : 4000);
+}
 function badge(name, good) {
   const el = document.createElement('span'); el.className = 'badge' + (good ? ' ok' : '');
   el.textContent = name + ': ' + (good ? 'ready' : 'unavailable'); return el;
@@ -229,7 +240,11 @@ async function refresh() {
     }
     $('dry-next').disabled = !(s.last_result?.dry_run && !s.index_running && s.last_result.exit_code === 0);
     $('wizard').classList.toggle('hidden', s.config.onboarding_complete); $('dashboard').classList.toggle('hidden', !s.config.onboarding_complete);
-  } catch (e) { message(e.message, true); }
+    refreshError = null;
+  } catch (e) {
+    if (refreshError !== e.message) message(e.message, true);
+    refreshError = e.message;
+  }
 }
 async function start() {
   try {

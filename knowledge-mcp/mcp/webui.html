@@ -8,6 +8,10 @@
 </style>
 <style>select{width:100%;padding:9px;border:1px solid #adbbca;border-radius:6px;font:inherit}#setup-agent-key,#dashboard-agent-key{overflow-wrap:anywhere}</style>
 <style>
+#message{position:fixed;bottom:24px;right:24px;z-index:100;max-width:min(460px,calc(100vw - 48px));min-height:0;margin:0;padding:14px 18px;border:1px solid #9dd9b1;border-radius:9px;background:#e1f5e7;color:#155b30;box-shadow:0 6px 24px #18283a26;opacity:0;transform:translateY(12px);pointer-events:none;transition:opacity .2s,transform .2s;overflow-wrap:anywhere}
+#message.visible{opacity:1;transform:translateY(0)}
+#message.error{border-color:#dcaaa5;background:#fff0ee;color:#9b2820}
+@media(prefers-reduced-motion:reduce){#message{transition:none}}
 .setup-progress-card{margin-top:8px}
 .setup-progress-card h2{margin-bottom:4px}
 .setup-progress-card progress{display:block;width:100%;height:12px;margin:14px 0 18px;accent-color:#16803d}
@@ -26,7 +30,7 @@
 .wizard-nav .next{margin-left:auto}
 </style>
 <header class="row"><div style="flex:1"><h1>Knowledge MCP</h1><p class="hint">Documents, indexing, and services</p></div><button id="logout" class="secondary hidden" onclick="logout()">Log out</button></header>
-<p id="message" role="status" aria-live="polite"></p>
+<p id="message" role="status" aria-live="polite" aria-atomic="true"></p>
 <section id="login-view" class="card hidden"><h2>Sign in</h2><label for="login-password">Password</label><input id="login-password" type="password" autocomplete="current-password"><button onclick="login()">Sign in</button></section>
 <main id="app-view" class="hidden">
 <section id="setup-progress-card" class="card setup-progress-card"><h2>Setup progress</h2><p id="wizard-progress" class="hint" role="status" aria-live="polite"></p><progress id="setup-progress-bar" max="6" value="0" aria-label="Setup completion"></progress><ol id="setup-steps" class="setup-steps" aria-label="Setup steps"><li data-progress-step="0"><span class="number">1</span>Dashboard access</li><li data-progress-step="1"><span class="number">2</span>Service health</li><li data-progress-step="2"><span class="number">3</span>Document folders</li><li data-progress-step="3"><span class="number">4</span>Indexing policy</li><li data-progress-step="4"><span class="number">5</span>Dry-run test</li><li data-progress-step="5"><span class="number">6</span>Initial indexing</li></ol></section>
