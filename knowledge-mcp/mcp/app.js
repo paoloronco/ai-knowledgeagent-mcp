@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let current = null, policy = null, selectedFolders = [''], availableFolders = [''];
+let current = null, policy = null, selectedFolders = [''], availableFolders = [''], loadedSyncRevision = null;
 
 async function api(path, data) {
   const options = data === undefined ? {} : {
@@ -20,6 +20,25 @@ function showStep(step) {
   $('wizard-progress').textContent = `Step ${step + 1} of 6`;
 }
 function nextStep() { showStep(Math.min(5, Number(sessionStorage.getItem('knowledge-onboarding-step') || 0) + 1)); }
+function sourceModeChanged() {
+  const mode = document.activeElement?.id?.endsWith('source-mode') ? document.activeElement.value : current.config.source_mode;
+  $('setup-source-mode').value = mode; $('dashboard-source-mode').value = mode;
+  document.querySelectorAll('[data-host-help]').forEach(el => el.classList.toggle('hidden', mode !== 'host_agent'));
+  const root = mode === 'host_agent' ? current.config.host_root : current.config.source_mode === 'container' ? current.config.source_root : '';
+  $('setup-source-root').value = root; $('dashboard-source-root').value = root;
+}
+async function pairAgent() {
+  try {
+    const result = await api('/api/agent/pair', {});
+    $('setup-agent-key').textContent = 'Pairing key (shown once): ' + result.token;
+    $('dashboard-agent-key').textContent = 'Pairing key (shown once): ' + result.token;
+    message('Host agent key generated. Install or re-pair the agent on the Docker host.');
+  } catch (e) { message(e.message, true); }
+}
+async function syncNow() {
+  try { await api('/api/agent/refresh', {}); message('Host sync requested. The agent will scan the folder shortly.'); }
+  catch (e) { message(e.message, true); }
+}
 
 async function login() {
   try {
@@ -56,14 +75,15 @@ function drawFolders() {
 }
 function folderWidget(id) {
   const node = $(id); node.replaceChildren();
-  const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = `Subfolders under ${current.source_root}`;
+  const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = `Subfolders under ${current.config.source_mode === 'host_agent' ? current.config.host_root : current.source_root}`;
   const list = document.createElement('div'); list.className = 'folders'; list.dataset.folderList = 'true';
   const add = document.createElement('div'); add.className = 'row';
   const input = document.createElement('input'); input.type = 'text'; input.placeholder = 'Optional subfolder path'; input.setAttribute('aria-label', 'Add subfolder'); input.style.flex = '1';
   const button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Add subfolder';
   button.onclick = () => {
     let value = input.value.trim(); if (!value) return;
-    if (value.startsWith(current.source_root + '/')) value = value.slice(current.source_root.length + 1);
+    const root = current.config.source_mode === 'host_agent' ? current.config.host_root : current.source_root;
+    if (value.startsWith(root + '/')) value = value.slice(root.length + 1);
     if (value.startsWith('/')) { message('Set this absolute path as the document root above, then save it.', true); return; }
     selectedFolders = [...selectedFolders.filter(x => x !== ''), value]; drawFolders(); input.value = '';
   };
@@ -75,13 +95,16 @@ async function loadFolders() {
 }
 async function saveFolders(advance = false, fromWizard = false) {
   try {
-    const sourceRoot = $(fromWizard ? 'setup-source-root' : 'dashboard-source-root').value.trim().replace(/\/+$/, '') || '/';
-    const folders = sourceRoot === current.source_root ? selectedFolders : [''];
+    const mode = $(fromWizard ? 'setup-source-mode' : 'dashboard-source-mode').value;
+    const sourceRoot = $(fromWizard ? 'setup-source-root' : 'dashboard-source-root').value.trim();
+    const oldRoot = current.config.source_mode === 'host_agent' ? current.config.host_root : current.source_root;
+    const folders = mode === current.config.source_mode && sourceRoot === oldRoot ? selectedFolders : [''];
     const interval = fromWizard ? 0 : Number($('interval').value);
-    const result = await api('/api/config', {source_root: sourceRoot, folders, interval_hours: interval});
-    selectedFolders = [...result.folders]; current.source_root = result.source_root;
-    $('setup-source-root').value = result.source_root; $('dashboard-source-root').value = result.source_root;
-    await loadFolders(); message('Document source saved.'); if (advance) nextStep(); await refresh();
+    const result = await api('/api/config', {...(mode === 'host_agent' ? {host_root: sourceRoot} : {source_root: sourceRoot}), source_mode: mode, folders, interval_hours: interval});
+    selectedFolders = [...result.folders]; current.config = result; current.source_root = result.source_root;
+    $('setup-source-root').value = mode === 'host_agent' ? result.host_root : result.source_root;
+    $('dashboard-source-root').value = $('setup-source-root').value;
+    await loadFolders(); message(mode === 'host_agent' ? 'Host folder saved. Waiting for the agent to sync it.' : 'Document source saved.'); if (advance) nextStep(); await refresh();
   } catch (e) { message(e.message, true); }
 }
 
@@ -136,9 +159,14 @@ async function startInitialIndex() {
 async function refresh() {
   try {
     const s = await api('/api/status'); current = s;
-    $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready));
+    $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready));
-    $('source-root').textContent = 'Document root: ' + s.source_root;
+    $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
+    const syncState = !s.agent_connected ? 'Host agent disconnected' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
+    const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
+    $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
+    $('setup-agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
+    if (s.config.source_mode === 'host_agent' && s.agent_synced && loadedSyncRevision !== s.config.sync_revision) { loadedSyncRevision = s.config.sync_revision; loadFolders().catch(e => message(e.message, true)); }
     $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} finished with exit code ${s.last_result.exit_code} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
     const readyForMcp = !s.index_running && s.last_result && !s.last_result.dry_run && s.last_result.exit_code === 0 && s.qdrant_ready;
     $('start-after-index').disabled = !readyForMcp || s.mcp_running;
@@ -161,7 +189,8 @@ async function start() {
     $('app-view').classList.remove('hidden'); $('logout').classList.toggle('hidden', !auth.required);
     $('auth-state').textContent = auth.required ? 'Login enabled' : 'Login disabled';
     current = await api('/api/status'); selectedFolders = [...current.config.folders];
-    $('setup-source-root').value = current.source_root; $('dashboard-source-root').value = current.source_root;
+    $('setup-source-mode').value = current.config.source_mode; $('dashboard-source-mode').value = current.config.source_mode;
+    sourceModeChanged();
     $('interval').value = current.config.interval_hours;
     await Promise.all([loadFolders(), loadPolicy()]);
     showStep(Number(sessionStorage.getItem('knowledge-onboarding-step') || 0)); await refresh(); setInterval(refresh, 3000);

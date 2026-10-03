@@ -42,14 +42,21 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/knowledge-smoke-docs"
           printf 'Knowledge MCP smoke test document.\n' > "$RUNNER_TEMP/knowledge-smoke-docs/note.md"
+          mkdir -p "$RUNNER_TEMP/knowledge-agent-docs"
+          printf 'Host agent document.\n' > "$RUNNER_TEMP/knowledge-agent-docs/host.md"
           docker run -d --name knowledge-smoke -p 0.0.0.0:18080:8080 -v "$RUNNER_TEMP/knowledge-smoke-docs:/mnt/knowledge:ro" knowledge-mcp:smoke
           trap 'docker rm -f knowledge-smoke >/dev/null 2>&1 || true' EXIT
           if ! python - <<'PY'
           import json
+          import os
+          from pathlib import Path
           import re
+          import sys
           import time
           import urllib.error
           import urllib.request
+          sys.path.insert(0, "knowledge-mcp")
+          import host_agent
 
           base = "http://127.0.0.1:18080"
           for _ in range(90):
@@ -69,7 +76,7 @@ jobs:
           token = re.search(r"const token='([^']+)'", page).group(1)
           request = urllib.request.Request(
               base + "/api/config",
-              data=json.dumps({"source_root": "/mnt/knowledge", "folders": [""], "interval_hours": 0}).encode(),
+              data=json.dumps({"source_mode": "container", "source_root": "/mnt/knowledge", "folders": [""], "interval_hours": 0}).encode(),
               headers={"Content-Type": "application/json", "X-Control-Token": token},
           )
           with urllib.request.urlopen(request, timeout=10) as response:
@@ -78,21 +85,33 @@ jobs:
           with urllib.request.urlopen(base + "/api/status", timeout=3) as response:
               status = json.load(response)
           assert status["source_ready"] and status["source_root"] == "/mnt/knowledge"
-          request = urllib.request.Request(base + "/api/upload?path=blocked.md", data=b"blocked", headers={"X-Control-Token": token})
+          def post(path, body, cookie=""):
+              headers = {"Content-Type": "application/json", "X-Control-Token": token}
+              if cookie:
+                  headers["Cookie"] = cookie
+              req = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers=headers)
+              return urllib.request.urlopen(req, timeout=10)
+          post("/api/security", {"enabled": True, "password": "smoke-test-password"}).close()
+          login = urllib.request.Request(base + "/api/login", data=json.dumps({"password": "smoke-test-password"}).encode(), headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(login, timeout=10) as response:
+              cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+          with post("/api/agent/pair", {}, cookie) as response:
+              agent_token = json.load(response)["token"]
+          with post("/api/config", {"source_mode": "host_agent", "host_root": str(Path(os.environ["RUNNER_TEMP"]) / "knowledge-agent-docs"), "folders": [""]}, cookie) as response:
+              assert json.load(response)["source_mode"] == "host_agent"
+          host_agent.sync(base, agent_token, host_agent.request(base, agent_token, "/api/agent/task"))
+          with urllib.request.urlopen(urllib.request.Request(base + "/api/status", headers={"Cookie": cookie}), timeout=3) as response:
+              assert json.load(response)["source_ready"]
+          request = urllib.request.Request(base + "/api/upload?path=blocked.md", data=b"blocked", headers={"X-Control-Token": token, "Cookie": cookie})
           try:
               urllib.request.urlopen(request, timeout=3)
           except urllib.error.HTTPError as error:
               assert error.code == 404
           else:
               raise SystemExit("Document upload endpoint is still available")
-          request = urllib.request.Request(
-              base + "/api/service",
-              data=json.dumps({"name": "mcp", "action": "start"}).encode(),
-              headers={"Content-Type": "application/json", "X-Control-Token": token},
-          )
-          urllib.request.urlopen(request, timeout=10).close()
+          post("/api/service", {"name": "mcp", "action": "start"}, cookie).close()
           for _ in range(60):
-              with urllib.request.urlopen(base + "/api/status", timeout=3) as response:
+              with urllib.request.urlopen(urllib.request.Request(base + "/api/status", headers={"Cookie": cookie}), timeout=3) as response:
                   if json.load(response)["mcp_running"]:
                       break
               time.sleep(1)

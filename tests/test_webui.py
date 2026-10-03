@@ -13,6 +13,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1] / "knowledge-mcp"
 sys.path.insert(0, str(ROOT / "mcp"))
 import webui as app
+sys.path.insert(0, str(ROOT))
+import host_agent
 
 
 class AdminBoundaryTest(unittest.TestCase):
@@ -24,6 +26,7 @@ class AdminBoundaryTest(unittest.TestCase):
             with (
                 patch.object(app, "DATA", data),
                 patch.object(app, "MANAGED_SOURCE", source),
+                patch.object(app, "HOST_SOURCE", data / "host-documents"),
                 patch.object(app, "SOURCE", source),
                 patch.object(app, "CONFIG", data / "config.json"),
                 patch.object(app, "POLICY", data / "index-policy.yaml"),
@@ -42,6 +45,7 @@ class AdminBoundaryTest(unittest.TestCase):
             with (
                 patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", source),
                 patch.object(app, "SOURCE", source), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "HOST_SOURCE", data / "host-documents"),
                 patch.object(app, "POLICY", data / "index-policy.yaml"),
             ):
                 controller = app.Controller()
@@ -59,18 +63,19 @@ class AdminBoundaryTest(unittest.TestCase):
             with (
                 patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", original),
                 patch.object(app, "SOURCE", original), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "HOST_SOURCE", data / "host-documents"),
                 patch.object(app, "POLICY", data / "index-policy.yaml"),
             ):
                 controller = app.Controller()
-                result = controller.update({"source_root": str(mounted), "folders": ["notes"]})
+                result = controller.update({"source_mode": "container", "source_root": str(mounted), "folders": ["notes"]})
                 self.assertEqual(result["source_root"], str(mounted))
                 self.assertEqual(result["folders"], ["notes"])
                 self.assertEqual(controller._env()["KNOWLEDGE_ROOT"], str(mounted))
                 self.assertEqual(json.loads(controller._env()["INDEX_SOURCE_PATHS"]), ["notes"])
                 with self.assertRaisesRegex(ValueError, "Mount the host folder"):
-                    controller.update({"source_root": str(Path(tmp) / "not-mounted"), "folders": [""]})
+                    controller.update({"source_mode": "container", "source_root": str(Path(tmp) / "not-mounted"), "folders": [""]})
                 with self.assertRaisesRegex(ValueError, "Application data cannot be indexed"):
-                    controller.update({"source_root": str(data), "folders": [""]})
+                    controller.update({"source_mode": "container", "source_root": str(data), "folders": [""]})
                 controller.close()
                 restored = app.Controller()
                 self.assertEqual(restored.config["source_root"], str(mounted))
@@ -109,6 +114,7 @@ class AdminBoundaryTest(unittest.TestCase):
                 patch.object(app, "POLICY", data / "index-policy.yaml"),
                 patch.object(app, "SOURCE", source),
                 patch.object(app, "MANAGED_SOURCE", source),
+                patch.object(app, "HOST_SOURCE", data / "host-documents"),
                 patch.object(app, "AUTH", data / "auth.json"),
             ):
                 controller = app.Controller()
@@ -162,6 +168,7 @@ class AdminBoundaryTest(unittest.TestCase):
             with (
                 patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", source),
                 patch.object(app, "SOURCE", source), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "HOST_SOURCE", data / "host-documents"),
                 patch.object(app, "AUTH", data / "auth.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
             ):
                 controller = app.Controller()
@@ -188,6 +195,67 @@ class AdminBoundaryTest(unittest.TestCase):
                         request = urllib.request.Request(url + "/api/status", headers={"Cookie": cookie})
                         with urllib.request.urlopen(request) as response:
                             self.assertEqual(response.status, 200)
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                        controller.close()
+
+    def test_host_agent_syncs_changed_files_and_removes_deleted_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data = base / "data"
+            mirror = data / "documents"
+            host_mirror = data / "host-documents"
+            host = base / "host"
+            (host / "notes").mkdir(parents=True)
+            (host / "notes" / "first.md").write_text("first version", encoding="utf-8")
+            (host / "secrets").mkdir()
+            (host / "secrets" / "private.md").write_text("private", encoding="utf-8")
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", mirror),
+                patch.object(app, "MANAGED_SOURCE", mirror), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "HOST_SOURCE", host_mirror),
+                patch.object(app, "AUTH", data / "auth.json"), patch.object(app, "AGENT_AUTH", data / "agent-auth.json"),
+                patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+                patch.object(app, "POLICY", data / "index-policy.yaml"),
+            ):
+                controller = app.Controller()
+                controller.set_password("strong-test-password")
+                token = controller.agent_pair()["token"]
+                controller.update({"source_mode": "host_agent", "host_root": str(host), "folders": [""]})
+                with patch.object(app, "controller", controller):
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        url = f"http://127.0.0.1:{server.server_port}"
+                        task = host_agent.request(url, token, "/api/agent/task")
+                        host_agent.sync(url, token, task)
+                        self.assertEqual((host_mirror / "notes" / "first.md").read_text(), "first version")
+                        self.assertFalse((host_mirror / "secrets" / "private.md").exists())
+                        self.assertTrue(controller.status()["source_ready"])
+                        (host / "notes" / "first.md").write_text("second version", encoding="utf-8")
+                        host_agent.sync(url, token, task)
+                        self.assertEqual((host_mirror / "notes" / "first.md").read_text(), "second version")
+                        (host / "notes" / "first.md").unlink()
+                        host_agent.sync(url, token, task)
+                        self.assertFalse((host_mirror / "notes" / "first.md").exists())
+                        (host / "old.md").write_text("old folder", encoding="utf-8")
+                        host_agent.sync(url, token, task)
+                        self.assertTrue((host_mirror / "old.md").exists())
+                        another_host = base / "another-host"
+                        another_host.mkdir()
+                        (another_host / "second.md").write_text("another folder", encoding="utf-8")
+                        controller.update({"source_mode": "host_agent", "host_root": str(another_host), "folders": [""]})
+                        self.assertFalse(controller.status()["source_ready"])
+                        host_agent.sync(url, token, host_agent.request(url, token, "/api/agent/task"))
+                        self.assertEqual((host_mirror / "second.md").read_text(), "another folder")
+                        self.assertFalse((host_mirror / "old.md").exists())
+                        self.assertEqual(json.loads((data / "config.json").read_text())["host_root"], str(another_host))
+                        bad = urllib.request.Request(url + "/api/agent/plan", data=b"{}", headers={"X-Agent-Token": "wrong"})
+                        with self.assertRaises(urllib.error.HTTPError) as denied:
+                            urllib.request.urlopen(bad)
+                        self.assertEqual(denied.exception.code, 403)
                     finally:
                         server.shutdown()
                         server.server_close()

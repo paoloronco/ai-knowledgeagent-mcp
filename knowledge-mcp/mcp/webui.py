@@ -15,17 +15,21 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
+from host_sync import allowed_file, host_root, relative_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path("/data")
 MANAGED_SOURCE = DATA / "documents"
+HOST_SOURCE = DATA / "host-documents"
 SOURCE = Path(os.getenv("KNOWLEDGE_ROOT", str(MANAGED_SOURCE))).resolve()
 CONFIG = DATA / "config.json"
 AUTH = DATA / "auth.json"
+AGENT_AUTH = DATA / "agent-auth.json"
+AGENT_MANIFEST = DATA / "agent-manifest.json"
 POLICY = DATA / "index-policy.yaml"
 DEFAULT_POLICY = ROOT / "mcp" / "index-policy.yaml"
 HTML = Path(__file__).with_name("webui.html")
@@ -43,7 +47,7 @@ def validate_source_root(value):
     protected = [ROOT, DATA, *(Path(name) for name in ("/qdrant", "/proc", "/sys", "/dev", "/etc", "/run", "/root", "/usr", "/var", "/bin", "/sbin", "/lib", "/lib64", "/boot"))]
     if path == Path(path.anchor) or any(path == base or path.is_relative_to(base) for base in protected if base != DATA):
         raise ValueError("This container system path cannot be indexed")
-    if path.is_relative_to(DATA) and not path.is_relative_to(MANAGED_SOURCE):
+    if path.is_relative_to(DATA) and not path.is_relative_to(MANAGED_SOURCE) and not path.is_relative_to(HOST_SOURCE):
         raise ValueError("Application data cannot be indexed")
     if not path.is_dir():
         raise ValueError(f"{path} is not visible inside the container. Mount the host folder read-only at this path and recreate the container.")
@@ -88,6 +92,14 @@ def source_dir_or_false(value, root=None):
         return False
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as document:
+        for block in iter(lambda: document.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def password_record(password):
     if not isinstance(password, str) or len(password) < 12 or len(password) > 1024:
         raise ValueError("Password must be at least 12 characters")
@@ -116,8 +128,8 @@ def validate_policy(content):
     supported = {".pdf", ".docx", ".pptx", ".md", ".txt", ".html", ".htm"}
     if not policy["include_extensions"] or any(x not in supported for x in policy["include_extensions"]):
         raise ValueError("include_extensions must use supported extensions")
-    if type(policy.get("max_file_size_mb")) not in (int, float) or not math.isfinite(policy["max_file_size_mb"]) or policy["max_file_size_mb"] <= 0:
-        raise ValueError("max_file_size_mb must be a positive number")
+    if type(policy.get("max_file_size_mb")) not in (int, float) or not math.isfinite(policy["max_file_size_mb"]) or not 0 < policy["max_file_size_mb"] <= 512:
+        raise ValueError("max_file_size_mb must be between 0 and 512")
 
 
 class Controller:
@@ -129,7 +141,7 @@ class Controller:
             shutil.copyfile(DEFAULT_POLICY, POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
-        self.config = {"source_root": str(SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start}
+        self.config = {"source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start}
         migrated = False
         if CONFIG.exists():
             stored = json.loads(CONFIG.read_text(encoding="utf-8"))
@@ -137,6 +149,8 @@ class Controller:
             migrated = "folders" not in stored
             if migrated:
                 self.config["folders"] = [stored.get("subfolder", "")]
+        if self.config["source_mode"] == "host_agent":
+            HOST_SOURCE.mkdir(parents=True, exist_ok=True)
         try:
             selected_root = validate_source_root(self.config["source_root"])
             self.config["folders"] = normalize_folders(self.config["folders"], selected_root)
@@ -149,6 +163,9 @@ class Controller:
             self._save()
         self.sessions = {}
         self.login_attempts = {}
+        self.agent_seen_at = 0
+        self.sync_in_progress = False
+        self.agent_manifest = json.loads(AGENT_MANIFEST.read_text(encoding="utf-8")) if AGENT_MANIFEST.exists() else {"revision": -1, "files": {}}
         self.stopping = False
         self.qdrant = None
         self.mcp = None
@@ -198,6 +215,120 @@ class Controller:
 
     def _env(self):
         return {**os.environ, "KNOWLEDGE_ROOT": self.config["source_root"], "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY)}
+
+    def agent_pair(self):
+        if not self.password_enabled():
+            raise ValueError("Enable dashboard login before pairing the host agent")
+        token = secrets.token_urlsafe(48)
+        with self.lock:
+            tmp = AGENT_AUTH.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"sha256": hashlib.sha256(token.encode()).hexdigest()}), encoding="utf-8")
+            tmp.replace(AGENT_AUTH)
+            if os.name == "posix":
+                AGENT_AUTH.chmod(0o600)
+            self.agent_seen_at = 0
+        return {"token": token}
+
+    def agent_authenticated(self, token):
+        if not isinstance(token, str) or not AGENT_AUTH.exists():
+            return False
+        expected = json.loads(AGENT_AUTH.read_text(encoding="utf-8"))["sha256"]
+        return hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), expected)
+
+    def agent_task(self):
+        with self.lock:
+            self.agent_seen_at = time.time()
+            return {"source_mode": self.config["source_mode"], "host_root": self.config["host_root"], "revision": self.config["sync_revision"], "sync_request": self.config["sync_request"], "policy": yaml.safe_load(POLICY.read_text(encoding="utf-8"))}
+
+    def request_agent_sync(self):
+        with self.lock:
+            if self.config["source_mode"] != "host_agent" or not self.config["host_root"]:
+                raise ValueError("Select a host folder first")
+            self.config["sync_request"] += 1
+            self._save()
+            return {"requested": True}
+
+    def agent_plan(self, values):
+        files = values.get("files")
+        revision = values.get("revision")
+        if not isinstance(files, dict) or len(files) > 50000:
+            raise ValueError("Invalid document inventory")
+        with self.lock:
+            if self.config["source_mode"] != "host_agent" or not self.config["host_root"] or revision != self.config["sync_revision"]:
+                raise ValueError("Host folder changed; retry the sync")
+            if self.ingest and self.ingest.poll() is None:
+                raise ValueError("Wait until indexing finishes before syncing")
+            policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+            for name, item in files.items():
+                if not isinstance(item, dict) or not allowed_file(name, item.get("size"), policy) or not isinstance(item.get("sha256"), str) or len(item["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in item["sha256"]):
+                    raise ValueError("Invalid or excluded document in inventory")
+            self.sync_in_progress = True
+            known = self.agent_manifest.get("files", {})
+            missing = [name for name, item in files.items() if known.get(name) != item or not (HOST_SOURCE / name).is_file() or (HOST_SOURCE / name).is_symlink() or file_sha256(HOST_SOURCE / name) != item["sha256"]]
+            return {"missing": missing}
+
+    def agent_file(self, name, revision, size, digest, stream):
+        path = relative_path(name)
+        with self.lock:
+            policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+            if self.config["source_mode"] != "host_agent" or revision != self.config["sync_revision"] or not self.sync_in_progress:
+                raise ValueError("No active host sync")
+            if not allowed_file(name, size, policy) or not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ValueError("Invalid or excluded document")
+            destination = HOST_SOURCE.joinpath(*path.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.is_symlink() or any(parent.is_symlink() for parent in destination.parents if parent != HOST_SOURCE and parent.is_relative_to(HOST_SOURCE)):
+                raise ValueError("Symlink in document destination")
+            temp = destination.with_name(destination.name + ".sync-" + secrets.token_hex(8))
+            actual = hashlib.sha256()
+            remaining = size
+            try:
+                with temp.open("xb") as output:
+                    while remaining:
+                        chunk = stream.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError("Incomplete document upload")
+                        output.write(chunk)
+                        actual.update(chunk)
+                        remaining -= len(chunk)
+                if actual.hexdigest() != digest:
+                    raise ValueError("Document checksum mismatch")
+                temp.replace(destination)
+            finally:
+                temp.unlink(missing_ok=True)
+
+    def agent_commit(self, values):
+        files = values.get("files")
+        revision = values.get("revision")
+        if not isinstance(files, dict) or len(files) > 50000:
+            raise ValueError("Invalid document inventory")
+        with self.lock:
+            if not self.sync_in_progress or revision != self.config["sync_revision"] or self.config["source_mode"] != "host_agent":
+                raise ValueError("No active host sync")
+            policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+            for name, item in files.items():
+                if not isinstance(item, dict) or not allowed_file(name, item.get("size"), policy) or not isinstance(item.get("sha256"), str):
+                    raise ValueError("Invalid document inventory")
+                path = HOST_SOURCE / name
+                if not path.is_file() or path.is_symlink() or path.stat().st_size != item["size"] or file_sha256(path) != item["sha256"]:
+                    raise ValueError(f"Document sync incomplete: {name}")
+            for base, dirs, names in os.walk(HOST_SOURCE, topdown=False, followlinks=False):
+                folder = Path(base)
+                for name in names:
+                    path = folder / name
+                    if not path.is_symlink() and path.relative_to(HOST_SOURCE).as_posix() not in files:
+                        path.unlink()
+                for name in dirs:
+                    path = folder / name
+                    if not path.is_symlink() and not any(path.iterdir()):
+                        path.rmdir()
+            tmp = AGENT_MANIFEST.with_suffix(".tmp")
+            synced_at = time.time()
+            tmp.write_text(json.dumps({"revision": revision, "files": files, "synced_at": synced_at}), encoding="utf-8")
+            tmp.replace(AGENT_MANIFEST)
+            self.agent_manifest = {"revision": revision, "files": files, "synced_at": synced_at}
+            self.sync_in_progress = False
+            return {"synced": len(files)}
 
     def _start_qdrant(self):
         if self.qdrant and self.qdrant.poll() is None:
@@ -260,7 +391,20 @@ class Controller:
         self.mcp = None
 
     def update(self, values):
-        selected_root = validate_source_root(values.get("source_root", self.config["source_root"]))
+        mode = values.get("source_mode", self.config["source_mode"])
+        if mode not in ("host_agent", "container"):
+            raise ValueError("Invalid document source mode")
+        if mode == "host_agent":
+            if not self.password_enabled():
+                raise ValueError("Enable dashboard login before selecting a host folder")
+            selected_host = host_root(values.get("host_root", self.config["host_root"]))
+            selected_root = HOST_SOURCE
+            selected_root.mkdir(parents=True, exist_ok=True)
+        else:
+            selected_host = ""
+            selected_root = validate_source_root(values.get("source_root", self.config["source_root"]))
+            if selected_root.is_relative_to(HOST_SOURCE):
+                raise ValueError("The host sync copy cannot be selected as a mounted folder")
         folders = normalize_folders(values.get("folders", [values["subfolder"]] if "subfolder" in values else self.config["folders"]), selected_root)
         interval = values.get("interval_hours", self.config["interval_hours"])
         if type(interval) is not int or not 0 <= interval <= 720:
@@ -269,11 +413,15 @@ class Controller:
         if type(enabled) is not bool:
             raise ValueError("Invalid MCP state")
         with self.lock:
-            root_changed = str(selected_root) != self.config["source_root"] or folders != self.config["folders"]
+            root_changed = str(selected_root) != self.config["source_root"] or selected_host != self.config["host_root"] or mode != self.config["source_mode"] or folders != self.config["folders"]
+            source_changed = str(selected_root) != self.config["source_root"] or selected_host != self.config["host_root"] or mode != self.config["source_mode"]
             interval_changed = interval != self.config["interval_hours"]
             if root_changed and self.ingest and self.ingest.poll() is None:
                 raise ValueError("Wait until indexing finishes before changing folders")
-            self.config.update(source_root=str(selected_root), folders=folders, interval_hours=interval, mcp_enabled=enabled)
+            self.config.update(source_mode=mode, host_root=selected_host, source_root=str(selected_root), folders=folders, interval_hours=interval, mcp_enabled=enabled)
+            if source_changed:
+                self.config["sync_revision"] += 1
+                self.sync_in_progress = False
             if root_changed:
                 self.invalidate_result()
             if interval_changed:
@@ -289,6 +437,8 @@ class Controller:
         with self.lock:
             if self.ingest and self.ingest.poll() is None:
                 raise ValueError("Indexing is already running")
+            if self.config["source_mode"] == "host_agent" and not self.host_source_ready():
+                raise ValueError("Wait for the host agent to finish syncing documents")
             selected_root = validate_source_root(self.config["source_root"])
             normalize_folders(self.config["folders"], selected_root)
             self.invalidate_result()
@@ -321,7 +471,10 @@ class Controller:
                 if self.stopping:
                     return
                 hours = self.config["interval_hours"] if self.config["onboarding_complete"] else 0
-                due = hours and time.time() - self.config["last_run_at"] >= hours * 3600
+                due_at = self.config["last_run_at"] + hours * 3600 if hours else 0
+                due = hours and time.time() >= due_at
+                if due and self.config["source_mode"] == "host_agent":
+                    due = self.agent_manifest.get("synced_at", 0) >= due_at
                 running = self.ingest and self.ingest.poll() is None
             if due and not running:
                 try:
@@ -344,6 +497,8 @@ class Controller:
             try:
                 source_root = validate_source_root(self.config["source_root"])
                 source_ready = all(source_dir_or_false(folder, source_root) for folder in self.config["folders"])
+                if self.config["source_mode"] == "host_agent":
+                    source_ready = source_ready and self.host_source_ready()
             except ValueError:
                 source_ready = False
             log = DATA / "ingest.log"
@@ -362,11 +517,18 @@ class Controller:
                 "mcp_running": bool(self.mcp and self.mcp.poll() is None and mcp_reachable),
                 "index_running": bool(self.ingest and self.ingest.poll() is None),
                 "source_ready": source_ready,
+                "agent_connected": time.time() - self.agent_seen_at < 60,
+                "agent_synced": self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress,
+                "agent_syncing": self.sync_in_progress,
+                "agent_last_sync_at": self.agent_manifest.get("synced_at"),
                 "source_root": self.config["source_root"],
                 "last_result": self.last_result,
                 "next_run_at": self.config["last_run_at"] + self.config["interval_hours"] * 3600 if self.config["interval_hours"] else None,
                 "log": tail,
             }
+
+    def host_source_ready(self):
+        return bool(self.config["host_root"] and self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress and time.time() - self.agent_seen_at < 60)
 
     def close(self):
         with self.lock:
@@ -427,6 +589,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/auth":
             self.send(200, json.dumps({"required": controller.password_enabled(), "authenticated": self._authenticated()}))
             return
+        if self.path == "/api/agent/task":
+            if not controller.agent_authenticated(self.headers.get("X-Agent-Token")):
+                self.send(403, json.dumps({"error": "Host agent not paired"}))
+                return
+            self.send(200, json.dumps(controller.agent_task()))
+            return
         if self.path == "/app.js":
             self.send(200, SCRIPT.read_text(encoding="utf-8"), "text/javascript; charset=utf-8")
             return
@@ -448,6 +616,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, json.dumps({"content": content, "policy": yaml.safe_load(content)}))
         elif self.path == "/api/folders":
             root = Path(controller.config["source_root"])
+            if controller.config["source_mode"] == "host_agent" and not controller.host_source_ready():
+                self.send(200, json.dumps({"folders": [""], "root": controller.config["host_root"]}))
+                return
             policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
             excluded = {x.casefold() for x in policy["exclude_directories"]}
             excluded_top = {x.casefold() for x in policy["exclude_top_level"]}
@@ -493,6 +664,31 @@ class Handler(BaseHTTPRequestHandler):
                     controller.login_attempts.pop(address, None)
                 self.send(200, json.dumps({"ok": True}), cookie=f"knowledge_session={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400")
                 return
+            if route.path.startswith("/api/agent/") and route.path not in ("/api/agent/pair", "/api/agent/refresh"):
+                if not controller.agent_authenticated(self.headers.get("X-Agent-Token")):
+                    self.send(403, json.dumps({"error": "Host agent not paired"}))
+                    return
+                if route.path == "/api/agent/file":
+                    query = parse_qs(route.query)
+                    name = query.get("path", [""])[0]
+                    revision = int(self.headers.get("X-Sync-Revision", "-1"))
+                    controller.agent_file(name, revision, length, self.headers.get("X-File-Sha256"), self.rfile)
+                    self.send(200, json.dumps({"saved": True}))
+                    return
+                if not 0 < length <= 8 * 1024 * 1024:
+                    raise ValueError("Document inventory is too large or empty")
+                values = json.loads(self.rfile.read(length))
+                if not isinstance(values, dict):
+                    raise ValueError("Invalid document inventory")
+                if route.path == "/api/agent/plan":
+                    result = controller.agent_plan(values)
+                elif route.path == "/api/agent/commit":
+                    result = controller.agent_commit(values)
+                else:
+                    self.send(404, json.dumps({"error": "Not found"}))
+                    return
+                self.send(200, json.dumps(result))
+                return
             if not self._authenticated() or self.headers.get("X-Control-Token") != TOKEN:
                 self.send(403, json.dumps({"error": "Unauthorized request"}))
                 return
@@ -513,10 +709,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Invalid data")
             if self.path == "/api/config":
                 result = controller.update(values)
+            elif self.path == "/api/agent/pair":
+                result = controller.agent_pair()
+            elif self.path == "/api/agent/refresh":
+                result = controller.request_agent_sync()
             elif self.path == "/api/security":
                 if values.get("enabled") is True:
                     controller.set_password(values.get("password"))
                 elif values.get("enabled") is False:
+                    if controller.config["source_mode"] == "host_agent" and controller.config["host_root"]:
+                        raise ValueError("Keep dashboard login enabled while using a host folder")
                     AUTH.unlink(missing_ok=True)
                     with controller.lock:
                         controller.sessions.clear()
@@ -545,6 +747,10 @@ class Handler(BaseHTTPRequestHandler):
                     tmp.write_text(content, encoding="utf-8")
                     tmp.replace(POLICY)
                     controller.invalidate_result()
+                    if controller.config["source_mode"] == "host_agent":
+                        controller.config["sync_revision"] += 1
+                        controller.sync_in_progress = False
+                        controller._save()
                 result = {"saved": True}
             else:
                 self.send(404, json.dumps({"error": "Not found"}))

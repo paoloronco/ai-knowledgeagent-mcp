@@ -1,10 +1,16 @@
 # Docker deployment notes
 
-The standard `docker run` command is in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
+The standard `docker run` command and host agent setup are in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, synchronized host documents, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
+
+## Select a host folder without changing Docker
+
+The host agent runs outside the container under your host user account. Pair it once from the dashboard; then enter an absolute host path, such as `/mnt/knowledge` or `C:\Users\Name\Documents`, in **Folder on the Docker host** mode. The agent polls the dashboard, applies the indexing policy before transfer, and copies only changed eligible documents. It checks for additions and deletions every five minutes. The dashboard blocks indexing until the selected folder has synchronized and the agent is connected. Scheduled indexing then uses the existing incremental hash state, so unchanged documents are not embedded again.
+
+The agent stores its pairing key in `~/.config/knowledge-mcp/agent.json` and logs to `~/.config/knowledge-mcp/agent.log`. On Linux, `install` creates a systemd user service; use `systemctl --user status knowledge-mcp-agent.service` to check it. On Windows, `install` creates a scheduled task that starts at sign-in. The host user must have read access to the chosen folder. To rotate the key, generate another in the dashboard and run `install` again. Treat the app volume as private: it contains a copy of eligible host documents.
 
 ## Compose with an existing document folder
 
-Create `compose.override.yaml` beside `compose.yaml`:
+This is an optional alternative to the host agent. Create `compose.override.yaml` beside `compose.yaml`:
 
 ```yaml
 services:
@@ -18,7 +24,7 @@ services:
           create_host_path: false
 ```
 
-Replace `source` with an existing absolute host path, then run `docker compose up -d`. Enter `/knowledge` as the document root in the dashboard; you can select the whole mount or several subfolders within it. On Windows, use a host source such as `C:/Users/Name/Documents`. The dashboard cannot create a Docker mount, and a host path is unavailable until the container is recreated with that mount.
+Replace `source` with an existing absolute host path, then run `docker compose up -d`. Choose **Folder already mounted inside the container** and enter `/knowledge` as the document root; you can select the whole mount or several subfolders within it. On Windows, use a host source such as `C:/Users/Name/Documents`. A bind mount still requires a container recreation when changed.
 
 To select folders from different host locations, mount each one under a separate subdirectory of the same container root (for example `/knowledge/team-a` and `/knowledge/team-b`), then select `/knowledge` as the document root in the dashboard.
 
