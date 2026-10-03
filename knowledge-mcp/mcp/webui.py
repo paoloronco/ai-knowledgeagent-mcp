@@ -457,6 +457,8 @@ class Controller:
                 self.agent_error_text = ""
             if root_changed:
                 self.invalidate_result()
+                if not self.config["onboarding_complete"]:
+                    self.config["setup_step"] = min(self.config["setup_step"], 2)
             if interval_changed:
                 self.config["last_run_at"] = time.time()
             self._save()
@@ -789,6 +791,9 @@ class Handler(BaseHTTPRequestHandler):
                     tmp.write_text(content, encoding="utf-8")
                     tmp.replace(POLICY)
                     controller.invalidate_result()
+                    if not controller.config["onboarding_complete"]:
+                        controller.config["setup_step"] = min(controller.config["setup_step"], 3)
+                        controller._save()
                     if controller.config["source_mode"] == "host_agent":
                         controller.config["sync_revision"] += 1
                         controller.sync_in_progress = False

@@ -20,8 +20,10 @@ import host_agent
 class AdminBoundaryTest(unittest.TestCase):
     def test_setup_progress_is_persisted_and_requires_successful_initial_index(self):
         with tempfile.TemporaryDirectory() as tmp:
-            data = Path(tmp)
+            data = Path(tmp) / "data"
             source = data / "documents"
+            mounted = Path(tmp) / "mounted"
+            mounted.mkdir()
             with (
                 patch.object(app, "DATA", data), patch.object(app, "SOURCE", source),
                 patch.object(app, "MANAGED_SOURCE", source), patch.object(app, "HOST_SOURCE", data / "host-documents"),
@@ -38,6 +40,10 @@ class AdminBoundaryTest(unittest.TestCase):
                     self.assertEqual(controller.advance_setup(step)["setup_step"], step)
                 with self.assertRaises(ValueError):
                     controller.advance_setup(6)
+                controller.update({"source_mode": "container", "source_root": str(mounted), "folders": [""]})
+                self.assertEqual(controller.config["setup_step"], 2)
+                for step in range(3, 6):
+                    controller.advance_setup(step)
                 controller.complete_onboarding()
                 controller._finish_index(Mock(wait=lambda: 1), False)
                 self.assertEqual(controller.config["setup_step"], 5)
@@ -187,6 +193,17 @@ class AdminBoundaryTest(unittest.TestCase):
                         with urllib.request.urlopen(request) as response:
                             self.assertEqual(json.load(response)["folders"], ["notes"])
                         self.assertEqual(json.loads((data / "config.json").read_text())["folders"], ["notes"])
+                        controller.config.update(onboarding_complete=False, setup_step=5)
+                        controller._save()
+                        policy_request = urllib.request.Request(
+                            url + "/api/policy",
+                            data=json.dumps({"content": app.DEFAULT_POLICY.read_text(encoding="utf-8")}).encode(),
+                            headers={"Content-Type": "application/json", "X-Control-Token": app.TOKEN},
+                        )
+                        with urllib.request.urlopen(policy_request) as response:
+                            self.assertEqual(response.status, 200)
+                        self.assertEqual(controller.config["setup_step"], 3)
+                        self.assertEqual(json.loads((data / "config.json").read_text())["setup_step"], 3)
                     finally:
                         server.shutdown()
                         server.server_close()

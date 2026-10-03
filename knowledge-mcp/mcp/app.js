@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let current = null, policy = null, selectedFolders = [''], availableFolders = [''], loadedSyncRevision = null, wizardStep = 0;
+let current = null, policy = null, selectedFolders = [''], availableFolders = [''], loadedSyncRevision = null, wizardStep = 0, authRequired = false;
 const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Dry-run test', 'Initial indexing'];
 
 async function api(path, data) {
@@ -22,9 +22,9 @@ function renderSetupProgress(status) {
   for (const item of $('setup-steps').children) {
     const index = Number(item.dataset.progressStep);
     item.classList.toggle('complete', index < done);
-    item.classList.toggle('current', index === wizardStep && index >= done);
+    item.classList.toggle('current', index === wizardStep);
     item.classList.toggle('failed', index === 5 && done === 5 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0);
-    if (index === wizardStep && index >= done) item.setAttribute('aria-current', 'step');
+    if (index === wizardStep) item.setAttribute('aria-current', 'step');
     else item.removeAttribute('aria-current');
   }
   if (done === 5 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0) $('wizard-progress').textContent = 'Initial indexing failed · review the log and retry';
@@ -36,6 +36,7 @@ function showStep(step) {
   const list = $('setup-steps'), item = list.children[wizardStep];
   if (item) list.scrollTo({left: item.offsetLeft - list.offsetLeft - (list.clientWidth - item.clientWidth) / 2, behavior: 'smooth'});
 }
+function backStep() { showStep(wizardStep - 1); }
 async function nextStep() {
   try {
     const step = Math.min(5, wizardStep + 1);
@@ -74,7 +75,13 @@ async function logout() { try { await api('/api/logout', {}); location.reload();
 async function setupSecurity() {
   try {
     if ($('login-enabled').checked) {
-      await api('/api/security', {enabled: true, password: $('setup-password').value});
+      const password = $('setup-password').value;
+      if (!authRequired || password) {
+        await api('/api/security', {enabled: true, password});
+        location.reload(); return;
+      }
+    } else if (authRequired) {
+      await api('/api/security', {enabled: false});
       location.reload(); return;
     }
     await nextStep();
@@ -220,16 +227,18 @@ async function refresh() {
     if (s.last_result?.dry_run && !s.index_running) {
       $('dry-result').textContent = s.last_result.exit_code === 0 ? 'Test complete. Review the log.' : 'Test failed. Review the log.';
     }
-    $('dry-next').disabled = s.config.setup_step < 5 && !(s.last_result?.dry_run && !s.index_running && s.last_result.exit_code === 0);
+    $('dry-next').disabled = !(s.last_result?.dry_run && !s.index_running && s.last_result.exit_code === 0);
     $('wizard').classList.toggle('hidden', s.config.onboarding_complete); $('dashboard').classList.toggle('hidden', !s.config.onboarding_complete);
   } catch (e) { message(e.message, true); }
 }
 async function start() {
   try {
     const auth = await api('/api/auth'); if (!auth.authenticated) { $('login-view').classList.remove('hidden'); return; }
+    authRequired = auth.required;
     $('app-view').classList.remove('hidden'); $('logout').classList.toggle('hidden', !auth.required);
     $('auth-state').textContent = auth.required ? 'Login enabled' : 'Login disabled';
     current = await api('/api/status'); selectedFolders = [...current.config.folders];
+    $('login-enabled').checked = auth.required || current.config.setup_step === 0;
     $('setup-source-mode').value = current.config.source_mode; $('dashboard-source-mode').value = current.config.source_mode;
     sourceModeChanged();
     $('interval').value = current.config.interval_hours;
