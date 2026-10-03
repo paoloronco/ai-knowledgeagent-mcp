@@ -11,7 +11,12 @@ const html = fs.readFileSync(path.join(ui, 'webui.html'), 'utf8');
 function dashboard(config, connected = false) {
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, {
     value: '', textContent: '', children: [], open: false,
-    classList: {toggle() {}, remove() {}, add() {}}, replaceChildren() {}, scrollTo() {}
+    classList: {
+      classes: new Set(),
+      toggle(name, force) { if (force ?? !this.classes.has(name)) this.classes.add(name); else this.classes.delete(name); },
+      remove(name) { this.classes.delete(name); }, add(name) { this.classes.add(name); },
+      contains(name) { return this.classes.has(name); }
+    }, replaceChildren() {}, scrollTo() {}
   }]));
   const calls = [];
   const status = {config: {...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected, agent_managed: true,
@@ -83,4 +88,18 @@ test('changing access preference preserves the document path being edited', () =
   vm.runInContext('sourceModeChanged()', context);
   assert.equal(elements['setup-source-root'].value, '/mnt/custom-documents');
   assert.equal(elements['dashboard-source-mode'].value, 'host_agent');
+});
+
+test('Service health shows Start Qdrant only while managed Qdrant is unavailable', async () => {
+  const {elements, context, status} = dashboard(legacy);
+  status.qdrant_managed = true;
+  status.qdrant_ready = true;
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['wizard-qdrant'].classList.contains('hidden'), true);
+  status.qdrant_ready = false;
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['wizard-qdrant'].classList.contains('hidden'), false);
+  status.qdrant_managed = false;
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['wizard-qdrant'].classList.contains('hidden'), true);
 });

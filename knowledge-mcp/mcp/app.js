@@ -201,7 +201,9 @@ async function refresh() {
     $('mcp-guidance').textContent = s.index_running ? 'Wait for indexing to finish before starting MCP.' : readyForMcp && !s.mcp_running ? 'Indexing is complete. You can start MCP.' : s.mcp_running ? 'MCP is running.' : '';
     $('log').textContent = s.log || 'No run yet.'; $('setup-log').textContent = s.log || 'No run yet.';
     $('dry').disabled = s.index_running; $('run').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
-    document.querySelectorAll('[data-qdrant]').forEach(x => x.disabled = !s.qdrant_managed); $('wizard-qdrant').disabled = !s.qdrant_managed;
+    document.querySelectorAll('[data-qdrant]').forEach(x => x.disabled = !s.qdrant_managed);
+    $('wizard-qdrant').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);
+    $('wizard-qdrant').disabled = !s.qdrant_managed;
     $('next-run').textContent = s.next_run_at ? 'Next update: ' + new Date(s.next_run_at * 1000).toLocaleString('en-GB') : 'Scheduling is off';
     if (document.activeElement !== $('interval')) $('interval').value = s.config.interval_hours;
     if (s.last_result?.dry_run && !s.index_running) {
