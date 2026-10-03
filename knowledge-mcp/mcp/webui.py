@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import yaml
 from host_sync import allowed_file, host_root, relative_path
-from policy_defaults import ensure_required_exclusions
+from policy_defaults import ensure_required_exclusions, remove_legacy_default_exclusions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,7 +142,8 @@ class Controller:
         if not POLICY.exists():
             shutil.copyfile(DEFAULT_POLICY, POLICY)
         saved_policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
-        if ensure_required_exclusions(saved_policy):
+        migrated_policy = remove_legacy_default_exclusions(saved_policy)
+        if ensure_required_exclusions(saved_policy) or migrated_policy:
             tmp = POLICY.with_suffix(".tmp")
             tmp.write_text(yaml.safe_dump(saved_policy, sort_keys=False, allow_unicode=True), encoding="utf-8")
             tmp.replace(POLICY)

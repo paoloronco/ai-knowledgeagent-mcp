@@ -21,7 +21,7 @@ import yaml
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "mcp"))
-from policy_defaults import REQUIRED_DIRECTORY_NAMES, REQUIRED_TOP_LEVEL_NAMES, ensure_required_exclusions
+from policy_defaults import REQUIRED_DIRECTORY_NAMES, REQUIRED_TOP_LEVEL_NAMES, ensure_required_exclusions, remove_legacy_default_exclusions
 
 load_dotenv(PROJECT_DIR / ".env")
 
@@ -45,6 +45,7 @@ EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
 def load_policy():
     with POLICY_FILE.open("r", encoding="utf-8") as f:
         policy = yaml.safe_load(f)
+    remove_legacy_default_exclusions(policy)
     ensure_required_exclusions(policy)
     root = os.getenv("KNOWLEDGE_ROOT") or policy.get("knowledge_root")
     if not root or root.startswith("${") or root == "/path/to/knowledge/root":

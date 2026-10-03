@@ -22,15 +22,15 @@ class DockerHostAccessTest(unittest.TestCase):
             folder = mount / "mnt" / "my-documents"
             folder.mkdir(parents=True)
             (folder / "example.md").write_text("Example document", encoding="utf-8")
-            (folder / "sample-folder").mkdir()
-            (folder / "sample-folder" / "excluded.md").write_text("Excluded fixture", encoding="utf-8")
+            (folder / "cache").mkdir()
+            (folder / "cache" / "excluded.md").write_text("Excluded fixture", encoding="utf-8")
             resolved, files = host_agent.inventory("/mnt/my-documents", self.policy, mount)
             self.assertEqual(resolved, folder.resolve())
             self.assertEqual(list(files), ["example.md"])
             with self.assertRaisesRegex(ValueError, "/mnt/not-present"):
                 host_agent.inventory("/mnt/not-present", self.policy, mount)
             with self.assertRaisesRegex(ValueError, "excluded"):
-                host_agent.inventory("/mnt/my-documents/sample-folder", self.policy, mount)
+                host_agent.inventory("/mnt/my-documents/cache", self.policy, mount)
             with self.assertRaisesRegex(ValueError, "host system directory"):
                 host_agent.resolve_host_folder("/proc/1/fd", mount)
 
@@ -48,9 +48,9 @@ class DockerHostAccessTest(unittest.TestCase):
                 resolved, files = host_agent.inventory(value, self.policy, mount)
                 self.assertEqual(resolved, target)
                 self.assertEqual(list(files), ["note.md"])
-            restricted = mount / "srv" / "sample-folder"
+            restricted = mount / "srv" / "cache"
             restricted.mkdir()
-            (mount / "mnt" / "private-alias").symlink_to("/srv/sample-folder")
+            (mount / "mnt" / "private-alias").symlink_to("/srv/cache")
             with self.assertRaisesRegex(ValueError, "excluded"):
                 host_agent.inventory("/mnt/private-alias", self.policy, mount)
             (mount / "mnt" / "loop").symlink_to("/mnt/loop")

@@ -33,8 +33,8 @@ class FakeModel:
 
 
 class CoreFlowTest(unittest.TestCase):
-    def test_sensitive_directories_remain_excluded_with_an_older_policy(self):
-        names = ("coverage", "cache", ".cache", "vendor", ".stversions", "sample-folder", "sample-folder", "sample-folder", "sample-folder")
+    def test_default_directories_remain_excluded_with_an_older_policy(self):
+        names = ("coverage", "cache", ".cache", "vendor", ".stversions")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "documents"
             root.mkdir()
@@ -57,14 +57,14 @@ class CoreFlowTest(unittest.TestCase):
     def test_selected_folders_and_file_exclusions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for name in ("team-a", "team-b", "sample-folder"):
+            for name in ("team-a", "team-b", "cache"):
                 (root / name).mkdir()
                 (root / name / "note.md").write_text("Visible content", encoding="utf-8")
             (root / "team-a" / "skip.md").write_text("Excluded content", encoding="utf-8")
             with patch.dict(os.environ, {"KNOWLEDGE_ROOT": str(root)}):
                 policy = ingest.load_policy()
             policy["exclude_files"] = ["skip.md"]
-            with patch.dict(os.environ, {"INDEX_SOURCE_PATHS": json.dumps(["team-a", "team-b", "sample-folder"])}):
+            with patch.dict(os.environ, {"INDEX_SOURCE_PATHS": json.dumps(["team-a", "team-b", "cache"])}):
                 paths = ingest.discover_documents(policy)
             self.assertEqual({p.relative_to(root).as_posix() for p in paths}, {"team-a/note.md", "team-b/note.md"})
 
@@ -87,7 +87,7 @@ class CoreFlowTest(unittest.TestCase):
             root.mkdir()
             source = root / "note.md"
             source.write_text("Qdrant configuration. " * 10 + "\npassword: supersecret\n", encoding="utf-8")
-            excluded = root / "sample-folder"
+            excluded = root / "CACHE"
             excluded.mkdir()
             (excluded / "private.md").write_text("Must stay out of Qdrant. " * 10, encoding="utf-8")
             state_file = Path(tmp) / "state.json"
@@ -117,7 +117,7 @@ class CoreFlowTest(unittest.TestCase):
                 result = retrieval.search("Qdrant configuration")
                 self.assertTrue(result["results"])
                 self.assertIn("[REDACTED]", result["results"][0]["text"])
-                self.assertFalse(retrieval.eligible_for_query(r"Projects\sample-folder\secret.md", "current"))
+                self.assertFalse(retrieval.eligible_for_query(r"Projects\CACHE\secret.md", "current"))
 
                 source.write_text("New Qdrant configuration. " * 10, encoding="utf-8")
                 ingest.main()

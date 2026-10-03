@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 import tempfile
@@ -9,10 +10,13 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1] / "knowledge-mcp"
 sys.path.insert(0, str(ROOT / "mcp"))
 import webui as app
+import policy_defaults
 sys.path.insert(0, str(ROOT))
 import host_agent
 
@@ -90,7 +94,7 @@ class AdminBoundaryTest(unittest.TestCase):
             data = Path(tmp)
             policy_file = data / "index-policy.yaml"
             old_policy = app.DEFAULT_POLICY.read_text(encoding="utf-8")
-            for name in ("coverage", "cache", ".cache", "vendor", ".stversions", "sample-folder", "sample-folder", "sample-folder", "sample-folder"):
+            for name in ("coverage", "cache", ".cache", "vendor", ".stversions"):
                 old_policy = old_policy.replace(f"  - {name}\n", "")
             policy_file.write_text(old_policy, encoding="utf-8")
             with (
@@ -102,6 +106,28 @@ class AdminBoundaryTest(unittest.TestCase):
                 controller = app.Controller()
                 app.validate_policy(policy_file.read_text(encoding="utf-8"))
                 controller.close()
+
+    def test_legacy_bundled_exclusions_are_removed_from_saved_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            policy_file = data / "index-policy.yaml"
+            policy = yaml.safe_load(app.DEFAULT_POLICY.read_text(encoding="utf-8"))
+            old_entries = ["former-one", "former-two", "former-three", "former-four"]
+            legacy_list = policy["exclude_directories"] + old_entries
+            policy["exclude_directories"] = legacy_list + ["custom-folder"]
+            policy_file.write_text(yaml.safe_dump(policy), encoding="utf-8")
+            fingerprint = hashlib.sha256("\0".join(legacy_list).encode()).hexdigest()
+            with (
+                patch.object(policy_defaults, "LEGACY_DIRECTORY_LIST_SHA256", fingerprint),
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", data / "documents"),
+                patch.object(app, "MANAGED_SOURCE", data / "documents"), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", policy_file),
+                patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+            ):
+                controller = app.Controller()
+                controller.close()
+            saved = yaml.safe_load(policy_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["exclude_directories"], policy_defaults.DEFAULT_POLICY["exclude_directories"] + ["custom-folder"])
 
     def test_setup_progress_is_persisted_and_requires_successful_initial_index(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,7 +296,7 @@ class AdminBoundaryTest(unittest.TestCase):
         original = app.DEFAULT_POLICY.read_text(encoding="utf-8")
         app.validate_policy(original)
         with self.assertRaises(ValueError):
-            app.validate_policy(original.replace("  - sample-folder\n", ""))
+            app.validate_policy(original.replace("  - vendor\n", ""))
         with self.assertRaises(ValueError):
             app.validate_policy(original.replace("  - .pem\n", "  - .PEM\n"))
 

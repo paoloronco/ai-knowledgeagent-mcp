@@ -28,10 +28,6 @@ exclude_directories:
   - .cache
   - vendor
   - .stversions
-  - sample-folder
-  - sample-folder
-  - sample-folder
-  - sample-folder
 
 exclude_top_level:
   - secrets
