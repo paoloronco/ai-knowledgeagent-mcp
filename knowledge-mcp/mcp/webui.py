@@ -10,13 +10,12 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path, PurePosixPath
-from urllib.parse import parse_qs, urlsplit
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -34,23 +33,46 @@ SCRIPT = Path(__file__).with_name("app.js")
 TOKEN = secrets.token_urlsafe(32)
 
 
-def source_dir(subfolder):
-    if not isinstance(subfolder, str) or (os.name != "nt" and "\\" in subfolder):
-        raise ValueError("Invalid folder")
-    path = Path(subfolder)
-    path = (path if path.is_absolute() else SOURCE / path).resolve()
-    if not path.is_relative_to(SOURCE) or not path.is_dir():
-        raise ValueError(f"Choose an existing folder inside {SOURCE}")
+def validate_source_root(value):
+    if not isinstance(value, str) or not value or (os.name != "nt" and "\\" in value):
+        raise ValueError("Enter an absolute document path inside the container")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("Enter an absolute document path inside the container")
+    path = path.resolve()
+    protected = [ROOT, DATA, *(Path(name) for name in ("/qdrant", "/proc", "/sys", "/dev", "/etc", "/run", "/root", "/usr", "/var", "/bin", "/sbin", "/lib", "/lib64", "/boot"))]
+    if path == Path(path.anchor) or any(path == base or path.is_relative_to(base) for base in protected if base != DATA):
+        raise ValueError("This container system path cannot be indexed")
+    if path.is_relative_to(DATA) and not path.is_relative_to(MANAGED_SOURCE):
+        raise ValueError("Application data cannot be indexed")
+    if not path.is_dir():
+        raise ValueError(f"{path} is not visible inside the container. Mount the host folder read-only at this path and recreate the container.")
+    default = yaml.safe_load(DEFAULT_POLICY.read_text(encoding="utf-8"))
+    restricted = {name.casefold() for name in default["exclude_directories"] + default["exclude_top_level"]}
+    if any(part.casefold() in restricted for part in path.parts):
+        raise ValueError("This path is excluded by the indexing policy")
     return path
 
 
-def normalize_folders(values):
+def source_dir(subfolder, root=None):
+    if not isinstance(subfolder, str) or (os.name != "nt" and "\\" in subfolder):
+        raise ValueError("Invalid folder")
+    root = Path(root or SOURCE).resolve()
+    path = Path(subfolder)
+    path = (path if path.is_absolute() else root / path).resolve()
+    if not path.is_relative_to(root) or not path.is_dir():
+        raise ValueError(f"Choose an existing folder inside {root}")
+    return path
+
+
+def normalize_folders(values, root=None):
     if not isinstance(values, list) or not values or len(values) > 32:
         raise ValueError("Choose between 1 and 32 folders")
     folders = []
     for value in values:
-        path = source_dir(value)
-        relative = path.relative_to(SOURCE).as_posix()
+        root = Path(root or SOURCE).resolve()
+        path = source_dir(value, root)
+        relative = path.relative_to(root).as_posix()
         if relative == ".":
             relative = ""
         if relative not in folders:
@@ -58,9 +80,9 @@ def normalize_folders(values):
     return folders
 
 
-def source_dir_or_false(value):
+def source_dir_or_false(value, root=None):
     try:
-        source_dir(value)
+        source_dir(value, root)
         return True
     except ValueError:
         return False
@@ -107,7 +129,7 @@ class Controller:
             shutil.copyfile(DEFAULT_POLICY, POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
-        self.config = {"folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start}
+        self.config = {"source_root": str(SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start}
         migrated = False
         if CONFIG.exists():
             stored = json.loads(CONFIG.read_text(encoding="utf-8"))
@@ -116,10 +138,12 @@ class Controller:
             if migrated:
                 self.config["folders"] = [stored.get("subfolder", "")]
         try:
-            self.config["folders"] = normalize_folders(self.config.get("folders", [self.config.get("subfolder", "")]))
+            selected_root = validate_source_root(self.config["source_root"])
+            self.config["folders"] = normalize_folders(self.config["folders"], selected_root)
         except ValueError:
-            self.config["folders"] = [""]
-            self._save()
+            # Keep the configured source when its read-only mount is temporarily absent.
+            if not isinstance(self.config.get("folders"), list):
+                self.config["folders"] = [""]
         self.config.pop("subfolder", None)
         if migrated:
             self._save()
@@ -173,7 +197,7 @@ class Controller:
             (DATA / "last-result.json").unlink(missing_ok=True)
 
     def _env(self):
-        return {**os.environ, "KNOWLEDGE_ROOT": str(SOURCE), "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY)}
+        return {**os.environ, "KNOWLEDGE_ROOT": self.config["source_root"], "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY)}
 
     def _start_qdrant(self):
         if self.qdrant and self.qdrant.poll() is None:
@@ -236,7 +260,8 @@ class Controller:
         self.mcp = None
 
     def update(self, values):
-        folders = normalize_folders(values.get("folders", [values["subfolder"]] if "subfolder" in values else self.config["folders"]))
+        selected_root = validate_source_root(values.get("source_root", self.config["source_root"]))
+        folders = normalize_folders(values.get("folders", [values["subfolder"]] if "subfolder" in values else self.config["folders"]), selected_root)
         interval = values.get("interval_hours", self.config["interval_hours"])
         if type(interval) is not int or not 0 <= interval <= 720:
             raise ValueError("Interval must be between 0 and 720 hours")
@@ -244,11 +269,11 @@ class Controller:
         if type(enabled) is not bool:
             raise ValueError("Invalid MCP state")
         with self.lock:
-            root_changed = folders != self.config["folders"]
+            root_changed = str(selected_root) != self.config["source_root"] or folders != self.config["folders"]
             interval_changed = interval != self.config["interval_hours"]
             if root_changed and self.ingest and self.ingest.poll() is None:
                 raise ValueError("Wait until indexing finishes before changing folders")
-            self.config.update(folders=folders, interval_hours=interval, mcp_enabled=enabled)
+            self.config.update(source_root=str(selected_root), folders=folders, interval_hours=interval, mcp_enabled=enabled)
             if root_changed:
                 self.invalidate_result()
             if interval_changed:
@@ -264,7 +289,8 @@ class Controller:
         with self.lock:
             if self.ingest and self.ingest.poll() is None:
                 raise ValueError("Indexing is already running")
-            normalize_folders(self.config["folders"])
+            selected_root = validate_source_root(self.config["source_root"])
+            normalize_folders(self.config["folders"], selected_root)
             self.invalidate_result()
             args = [sys.executable, "ingestion/ingest.py"]
             if dry_run:
@@ -275,51 +301,6 @@ class Controller:
                 self.config["last_run_at"] = time.time()
                 self._save()
             threading.Thread(target=self._finish_index, args=(self.ingest, dry_run), daemon=True).start()
-
-    def upload_file(self, relative_path, length, stream):
-        if SOURCE != MANAGED_SOURCE:
-            raise ValueError("Uploads are unavailable for a mounted document folder")
-        if not isinstance(relative_path, str) or not 0 < len(relative_path) <= 1024 or "\\" in relative_path or any(ord(char) < 32 for char in relative_path):
-            raise ValueError("Invalid file path")
-        parts = relative_path.split("/")
-        if any(part in ("", ".", "..") for part in parts) or PurePosixPath(relative_path).is_absolute():
-            raise ValueError("Invalid file path")
-        policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
-        excluded_top = {name.casefold() for name in policy["exclude_top_level"]}
-        excluded_dirs = {name.casefold() for name in policy["exclude_directories"]}
-        excluded_files = {name.casefold() for name in policy.get("exclude_files", [])}
-        extension = Path(parts[-1]).suffix.lower()
-        if parts[0].casefold() in excluded_top or any(part.casefold() in excluded_dirs for part in parts[:-1]):
-            raise ValueError("This folder is excluded by the indexing policy")
-        if parts[-1].casefold() in excluded_files or relative_path.casefold() in excluded_files:
-            raise ValueError("This file is excluded by the indexing policy")
-        if extension not in policy["include_extensions"] or extension in policy["exclude_extensions"]:
-            raise ValueError("This file type is excluded by the indexing policy")
-        if not 0 < length <= policy["max_file_size_mb"] * 1024 * 1024:
-            raise ValueError("File is empty or exceeds the policy size limit")
-        target = SOURCE.joinpath(*parts)
-        if not target.resolve().is_relative_to(SOURCE):
-            raise ValueError("Invalid file path")
-        with self.lock:
-            if self.ingest and self.ingest.poll() is None:
-                raise ValueError("Wait until indexing finishes before uploading files")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = None
-            try:
-                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
-                    temporary = Path(output.name)
-                    remaining = length
-                    while remaining:
-                        chunk = stream.read(min(1024 * 1024, remaining))
-                        if not chunk:
-                            raise ValueError("Upload ended before the complete file arrived")
-                        output.write(chunk)
-                        remaining -= len(chunk)
-                temporary.replace(target)
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
-        return {"saved": relative_path}
 
     def _finish_index(self, process, dry_run):
         code = process.wait()
@@ -360,6 +341,11 @@ class Controller:
         except OSError:
             mcp_reachable = False
         with self.lock:
+            try:
+                source_root = validate_source_root(self.config["source_root"])
+                source_ready = all(source_dir_or_false(folder, source_root) for folder in self.config["folders"])
+            except ValueError:
+                source_ready = False
             log = DATA / "ingest.log"
             tail = ""
             if log.exists():
@@ -375,9 +361,8 @@ class Controller:
                 "qdrant_running": bool(self.qdrant and self.qdrant.poll() is None) if Path("/qdrant/qdrant").exists() else qdrant,
                 "mcp_running": bool(self.mcp and self.mcp.poll() is None and mcp_reachable),
                 "index_running": bool(self.ingest and self.ingest.poll() is None),
-                "source_ready": all(source_dir_or_false(folder) for folder in self.config["folders"]),
-                "source_root": str(SOURCE),
-                "upload_enabled": SOURCE == MANAGED_SOURCE,
+                "source_ready": source_ready,
+                "source_root": self.config["source_root"],
                 "last_result": self.last_result,
                 "next_run_at": self.config["last_run_at"] + self.config["interval_hours"] * 3600 if self.config["interval_hours"] else None,
                 "log": tail,
@@ -462,12 +447,13 @@ class Handler(BaseHTTPRequestHandler):
             content = POLICY.read_text(encoding="utf-8")
             self.send(200, json.dumps({"content": content, "policy": yaml.safe_load(content)}))
         elif self.path == "/api/folders":
+            root = Path(controller.config["source_root"])
             policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
             excluded = {x.casefold() for x in policy["exclude_directories"]}
             excluded_top = {x.casefold() for x in policy["exclude_top_level"]}
             folders = [""]
-            for base, dirs, _ in os.walk(SOURCE):
-                relative = Path(base).relative_to(SOURCE)
+            for base, dirs, _ in os.walk(root):
+                relative = Path(base).relative_to(root)
                 dirs[:] = sorted(d for d in dirs if d.casefold() not in excluded and (relative.parts or d.casefold() not in excluded_top) and not (Path(base) / d).is_symlink())
                 for directory in dirs:
                     folders.append((relative / directory).as_posix())
@@ -475,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
                         break
                 if len(folders) >= 500:
                     break
-            self.send(200, json.dumps({"folders": folders, "root": str(SOURCE)}))
+            self.send(200, json.dumps({"folders": folders, "root": str(root)}))
         else:
             self.send(404, json.dumps({"error": "Not found"}))
 
@@ -518,10 +504,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, json.dumps({"ok": True}), cookie="knowledge_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
                 return
             if route.path == "/api/upload":
-                paths = parse_qs(route.query).get("path", [])
-                if len(paths) != 1:
-                    raise ValueError("Provide one relative file path")
-                self.send(200, json.dumps(controller.upload_file(paths[0], length, self.rfile)))
+                self.send(404, json.dumps({"error": "Document uploads are unavailable"}))
                 return
             if not 0 < length <= 65536:
                 raise ValueError("Request is too large or empty")

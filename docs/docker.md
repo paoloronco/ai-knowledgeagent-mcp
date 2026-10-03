@@ -1,6 +1,6 @@
 # Docker deployment notes
 
-The standard `docker run` command is in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Browser uploads, settings, ingestion state, and the model cache are under `/data`. Both paths need persistent Docker volumes.
+The standard `docker run` command is in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
 
 ## Compose with an existing document folder
 
@@ -9,8 +9,6 @@ Create `compose.override.yaml` beside `compose.yaml`:
 ```yaml
 services:
   app:
-    environment:
-      KNOWLEDGE_ROOT: /knowledge
     volumes:
       - type: bind
         source: /absolute/path/to/documents
@@ -20,9 +18,9 @@ services:
           create_host_path: false
 ```
 
-Replace `source` with an existing absolute host path, then run `docker compose up -d`. The Web UI can select the whole mount or several subfolders within it. Enter the path as seen inside the container (`/knowledge` in this example), not the host path. Browser uploads are disabled in this mode. On Windows, use a host source such as `C:/Users/Name/Documents`.
+Replace `source` with an existing absolute host path, then run `docker compose up -d`. Enter `/knowledge` as the document root in the dashboard; you can select the whole mount or several subfolders within it. On Windows, use a host source such as `C:/Users/Name/Documents`. The dashboard cannot create a Docker mount, and a host path is unavailable until the container is recreated with that mount.
 
-To select folders from different host locations, mount each one under a separate subdirectory of the same container root (for example `/knowledge/team-a` and `/knowledge/team-b`) and set `KNOWLEDGE_ROOT=/knowledge`. The dashboard only accepts paths within that root.
+To select folders from different host locations, mount each one under a separate subdirectory of the same container root (for example `/knowledge/team-a` and `/knowledge/team-b`), then select `/knowledge` as the document root in the dashboard.
 
 The dashboard health check is also available at `/api/health` on port 8080 and returns an error while Qdrant is unavailable. The image uses it for its Docker health status. Scheduled indexing rescans selected folders and skips parsing and embedding files already recorded unchanged in the persistent ingestion state.
 

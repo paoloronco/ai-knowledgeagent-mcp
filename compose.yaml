@@ -3,7 +3,6 @@ services:
     image: paoloronco/knowledge-mcp:latest
     restart: unless-stopped
     environment:
-      KNOWLEDGE_ROOT: /data/documents
       INGESTION_BASE_DIR: /data/ingestion
       POLICY_FILE: /data/index-policy.yaml
       MCP_HOST: 0.0.0.0

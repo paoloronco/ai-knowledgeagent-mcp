@@ -46,8 +46,35 @@ class AdminBoundaryTest(unittest.TestCase):
             ):
                 controller = app.Controller()
                 self.assertEqual(controller.config["folders"], ["notes"])
+                self.assertEqual(controller.config["source_root"], str(source))
                 self.assertEqual(json.loads((data / "config.json").read_text())["folders"], ["notes"])
                 controller.close()
+
+    def test_document_root_can_change_to_another_visible_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            original = data / "documents"
+            mounted = Path(tmp) / "mounted" / "knowledge"
+            (mounted / "notes").mkdir(parents=True)
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", original),
+                patch.object(app, "SOURCE", original), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "POLICY", data / "index-policy.yaml"),
+            ):
+                controller = app.Controller()
+                result = controller.update({"source_root": str(mounted), "folders": ["notes"]})
+                self.assertEqual(result["source_root"], str(mounted))
+                self.assertEqual(result["folders"], ["notes"])
+                self.assertEqual(controller._env()["KNOWLEDGE_ROOT"], str(mounted))
+                self.assertEqual(json.loads(controller._env()["INDEX_SOURCE_PATHS"]), ["notes"])
+                with self.assertRaisesRegex(ValueError, "Mount the host folder"):
+                    controller.update({"source_root": str(Path(tmp) / "not-mounted"), "folders": [""]})
+                with self.assertRaisesRegex(ValueError, "Application data cannot be indexed"):
+                    controller.update({"source_root": str(data), "folders": [""]})
+                controller.close()
+                restored = app.Controller()
+                self.assertEqual(restored.config["source_root"], str(mounted))
+                restored.close()
 
     def test_source_and_policy_cannot_escape_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,7 +119,10 @@ class AdminBoundaryTest(unittest.TestCase):
                     try:
                         url = f"http://127.0.0.1:{server.server_port}"
                         with urllib.request.urlopen(url) as response:
-                            self.assertIn(app.TOKEN, response.read().decode())
+                            page = response.read().decode()
+                            self.assertIn(app.TOKEN, page)
+                            self.assertIn('lang="en"', page)
+                            self.assertNotIn('type="file"', page)
                         lan = urllib.request.Request(url, headers={"Host": "10.10.10.80:8080"})
                         with urllib.request.urlopen(lan) as response:
                             self.assertEqual(response.status, 200)
@@ -109,19 +139,16 @@ class AdminBoundaryTest(unittest.TestCase):
                         with urllib.request.urlopen(request) as response:
                             self.assertEqual(response.status, 200)
                         upload = urllib.request.Request(url + "/api/upload?path=notes%2Fexample.md", data=b"Example document", headers={"X-Control-Token": app.TOKEN})
-                        with urllib.request.urlopen(upload) as response:
-                            self.assertEqual(response.status, 200)
-                        self.assertEqual((source / "notes" / "example.md").read_bytes(), b"Example document")
+                        with self.assertRaises(urllib.error.HTTPError) as denied:
+                            urllib.request.urlopen(upload)
+                        self.assertEqual(denied.exception.code, 404)
+                        self.assertFalse((source / "notes" / "example.md").exists())
+                        (source / "notes").mkdir()
                         config = {"folders": [str(source / "notes")], "interval_hours": 2}
                         request = urllib.request.Request(url + "/api/config", data=json.dumps(config).encode(), headers={"Content-Type": "application/json", "X-Control-Token": app.TOKEN})
                         with urllib.request.urlopen(request) as response:
                             self.assertEqual(json.load(response)["folders"], ["notes"])
                         self.assertEqual(json.loads((data / "config.json").read_text())["folders"], ["notes"])
-                        for path in ("..%2Fescape.md", "sample-folder%2Fprivate.md", "notes%2Fsecret.pem"):
-                            denied_upload = urllib.request.Request(url + "/api/upload?path=" + path, data=b"secret", headers={"X-Control-Token": app.TOKEN})
-                            with self.assertRaises(urllib.error.HTTPError) as denied:
-                                urllib.request.urlopen(denied_upload)
-                            self.assertEqual(denied.exception.code, 400)
                     finally:
                         server.shutdown()
                         server.server_close()

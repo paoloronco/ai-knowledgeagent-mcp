@@ -1,19 +1,19 @@
 # Knowledge MCP
 
-Search your documents through an MCP server. The Docker image contains the Web UI, ingestion service, MCP server, and Qdrant. After starting the container, use the Web UI to upload documents, review the policy, run indexing, schedule updates, and enable or disable MCP. No repository clone or local Python installation is required for the standard setup.
+Search your documents through an MCP server. The Docker image contains the Web UI, ingestion service, MCP server, and Qdrant. Mount an existing document folder read-only, then select its container path in the Web UI, review the policy, run indexing, schedule updates, and enable or disable MCP. The dashboard does not upload documents.
 
 ## Docker installation
 
-Install Docker, then run:
+Install Docker, replace `/absolute/path/to/documents` with an existing folder on the Docker host, then run:
 
 ```bash
 docker pull paoloronco/knowledge-mcp:latest
-docker run -d --name knowledge-mcp --restart unless-stopped -p 0.0.0.0:8080:8080 -p 0.0.0.0:8000:8000 -v knowledge_app:/data -v knowledge_qdrant:/qdrant/storage paoloronco/knowledge-mcp:latest
+docker run -d --name knowledge-mcp --restart unless-stopped -p 0.0.0.0:8080:8080 -p 0.0.0.0:8000:8000 -v knowledge_app:/data -v knowledge_qdrant:/qdrant/storage --mount type=bind,src=/absolute/path/to/documents,dst=/mnt/knowledge,readonly paoloronco/knowledge-mcp:latest
 ```
 
-Open `http://HOST_IP:8080` from a device on the same LAN (for example, `http://10.10.10.80:8080`). The first-run guide offers an optional dashboard password, checks service health, lets you select folders and review the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), runs a ten-document test, then starts indexing. The dashboard shows indexing progress and controls the MCP server. The MCP endpoint is `http://HOST_IP:8000/mcp` when enabled; it is for MCP clients, not a browser page.
+Open `http://HOST_IP:8080` from a device on the same LAN (for example, `http://10.10.10.80:8080`). Enter `/mnt/knowledge` as the document root in the first-run guide. The path is the **container path**, not the host path. The guide offers an optional dashboard password, checks service health, lets you select folders and review the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), runs a ten-document test, then starts indexing. The dashboard shows indexing progress and controls the MCP server. The MCP endpoint is `http://HOST_IP:8000/mcp` when enabled; it is for MCP clients, not a browser page.
 
-The two named volumes keep uploaded documents, settings, indexing state, model cache, and Qdrant data across container replacements. Do not remove them if you want to keep the index. Qdrant listens only inside the container and is not published to the host.
+The two named volumes keep settings, indexing state, model cache, Qdrant data, and any documents uploaded by older versions. Do not remove them if you want to keep the index. Qdrant listens only inside the container and is not published to the host.
 
 Ports 8080 and 8000 are published on all Docker host interfaces. The Web UI has an optional password; the MCP server still has no built-in login. Restrict access to a trusted LAN with a firewall, and add an authenticated proxy before exposing either port to the Internet. Use HTTPS when entering the dashboard password over a network.
 
@@ -25,20 +25,20 @@ To replace the container with the latest image while keeping its volumes:
 docker pull paoloronco/knowledge-mcp:latest
 docker stop -t 30 knowledge-mcp
 docker rm knowledge-mcp
-docker run -d --name knowledge-mcp --restart unless-stopped -p 0.0.0.0:8080:8080 -p 0.0.0.0:8000:8000 -v knowledge_app:/data -v knowledge_qdrant:/qdrant/storage paoloronco/knowledge-mcp:latest
+docker run -d --name knowledge-mcp --restart unless-stopped -p 0.0.0.0:8080:8080 -p 0.0.0.0:8000:8000 -v knowledge_app:/data -v knowledge_qdrant:/qdrant/storage --mount type=bind,src=/absolute/path/to/documents,dst=/mnt/knowledge,readonly paoloronco/knowledge-mcp:latest
 ```
 
 To stop it without removing the container, run `docker stop knowledge-mcp`; use `docker start knowledge-mcp` to start it again.
 
 ### Use an existing host folder
 
-For a large collection already on the Docker host, add a read-only mount and select it as the source:
+The dashboard can select any existing folder visible inside the container. For example, if the host folder is `/mnt/knowledge`, mount it at the same path:
 
 ```bash
-docker run -d --name knowledge-mcp --restart unless-stopped -p 0.0.0.0:8080:8080 -p 0.0.0.0:8000:8000 -v knowledge_app:/data -v knowledge_qdrant:/qdrant/storage -v /absolute/path/to/documents:/knowledge:ro -e KNOWLEDGE_ROOT=/knowledge paoloronco/knowledge-mcp:latest
+docker run -d --name knowledge-mcp --restart unless-stopped -p 0.0.0.0:8080:8080 -p 0.0.0.0:8000:8000 -v knowledge_app:/data -v knowledge_qdrant:/qdrant/storage --mount type=bind,src=/mnt/knowledge,dst=/mnt/knowledge,readonly paoloronco/knowledge-mcp:latest
 ```
 
-Replace the path with an existing absolute path; on Windows, use a path such as `C:/Users/Name/Documents`. In the Web UI, `/knowledge` selects the whole mounted library; you can also select one or more subfolders. The path must be visible **inside the container** and inside `KNOWLEDGE_ROOT`. For a mount at `/mnt/knowledge`, set both the mount target and `KNOWLEDGE_ROOT` to `/mnt/knowledge`. Browser uploads are disabled while a host folder is mounted. If you already have a separate Qdrant container, its index is **not** imported automatically. Keep that container and its storage until you have planned a migration.
+On Windows, use a host path such as `C:/Users/Name/Documents` on the left of the mount and `/mnt/knowledge` on the right. Changing the dashboard setting cannot create a Docker mount; recreate the container with the mount if the path is not visible. Existing source selection is saved across restarts. If you already have a separate Qdrant container, its index is **not** imported automatically. Keep that container and its storage until you have planned a migration.
 
 ## Docker Compose alternative
 

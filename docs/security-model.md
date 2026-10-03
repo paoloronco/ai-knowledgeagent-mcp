@@ -2,12 +2,12 @@
 
 ## Boundaries
 
-- Browser uploads are stored in the app's persistent Docker volume. Treat that volume as private data. For an existing host folder, mount it read-only where possible.
+- The dashboard does not accept document uploads. Mount an existing host folder read-only where possible. Legacy uploaded documents may remain in the app's persistent volume; treat that volume as private data.
 - Bind Qdrant to localhost. The application does not authenticate to Qdrant by default.
 - Docker publishes the Web UI and MCP server on the host's LAN interfaces. The Web UI can use a password; the MCP server has no built-in login. Limit access with a firewall and add an authenticated HTTPS proxy or Cloudflare Access before Internet exposure. Use HTTPS when entering the Web UI password over a network.
 - Review index-policy.yaml before ingestion. Directory and extension filters are the first boundary. Retrieval repeats restricted-path filtering, including Windows-style separators, as a second boundary.
 - Avoid putting secrets in the source corpus. The output redactor only recognizes common patterns in returned fields. It cannot guarantee removal of arbitrary credentials or sensitive prose.
-- MCP clients receive selected source text. Browser uploads are copied into a Docker volume; the originals remain in the browser's source folder. Retrieved excerpts leave the host by design.
+- MCP clients receive selected source text. Retrieved excerpts leave the host by design.
 
 ## Operational checks
 

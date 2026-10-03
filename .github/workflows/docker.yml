@@ -40,7 +40,9 @@ jobs:
           tags: knowledge-mcp:smoke
       - name: Verify standalone Web UI and Qdrant
         run: |
-          docker run -d --name knowledge-smoke -p 0.0.0.0:18080:8080 knowledge-mcp:smoke
+          mkdir -p "$RUNNER_TEMP/knowledge-smoke-docs"
+          printf 'Knowledge MCP smoke test document.\n' > "$RUNNER_TEMP/knowledge-smoke-docs/note.md"
+          docker run -d --name knowledge-smoke -p 0.0.0.0:18080:8080 -v "$RUNNER_TEMP/knowledge-smoke-docs:/mnt/knowledge:ro" knowledge-mcp:smoke
           trap 'docker rm -f knowledge-smoke >/dev/null 2>&1 || true' EXIT
           if ! python - <<'PY'
           import json
@@ -63,8 +65,26 @@ jobs:
 
           with urllib.request.urlopen(base) as response:
               page = response.read().decode()
-          assert "Prima configurazione" in page
+          assert "First-time setup" in page
           token = re.search(r"const token='([^']+)'", page).group(1)
+          request = urllib.request.Request(
+              base + "/api/config",
+              data=json.dumps({"source_root": "/mnt/knowledge", "folders": [""], "interval_hours": 0}).encode(),
+              headers={"Content-Type": "application/json", "X-Control-Token": token},
+          )
+          with urllib.request.urlopen(request, timeout=10) as response:
+              config = json.load(response)
+          assert config["source_root"] == "/mnt/knowledge"
+          with urllib.request.urlopen(base + "/api/status", timeout=3) as response:
+              status = json.load(response)
+          assert status["source_ready"] and status["source_root"] == "/mnt/knowledge"
+          request = urllib.request.Request(base + "/api/upload?path=blocked.md", data=b"blocked", headers={"X-Control-Token": token})
+          try:
+              urllib.request.urlopen(request, timeout=3)
+          except urllib.error.HTTPError as error:
+              assert error.code == 404
+          else:
+              raise SystemExit("Document upload endpoint is still available")
           request = urllib.request.Request(
               base + "/api/service",
               data=json.dumps({"name": "mcp", "action": "start"}).encode(),
