@@ -1,6 +1,6 @@
 # Docker deployment notes
 
-The one-command Compose setup and host agent setup are in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, synchronized host documents, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
+The one-command Compose setup is in the [root README](../README.md). The image starts its own Qdrant process and stores its data at `/qdrant/storage`. Settings, ingestion state, the model cache, synchronized host documents, and any documents from older versions are under `/data`. Both paths need persistent Docker volumes.
 
 ## Switching an existing `docker run` installation to Compose
 
@@ -28,7 +28,17 @@ Keep those volumes; removing them loses the dashboard settings, indexing state, 
 
 ## Select a host folder without changing Docker
 
-The host agent runs outside the container under your host user account. Pair it once from the dashboard; then enter an absolute host path, such as `/mnt/knowledge` or `C:\Users\Name\Documents`, in **Folder on the Docker host** mode. The agent polls the dashboard, applies the indexing policy before transfer, and copies only changed eligible documents. It checks for additions and deletions every five minutes. The dashboard blocks indexing until the selected folder has synchronized and the agent is connected. Scheduled indexing then uses the existing incremental hash state, so unchanged documents are not embedded again.
+Install Python 3.10+ on the Docker host, then run:
+
+```bash
+git clone https://github.com/paoloronco/ai-knowledgeagent-mcp.git
+cd ai-knowledgeagent-mcp
+python knowledge-mcp/host_agent.py install --url http://127.0.0.1:8080
+```
+
+Enable dashboard login and open **Document access settings** in **Service health** during onboarding or in **Services** on the dashboard. Choose **Folder on the Docker host**, generate a pairing key, and paste it into the agent's setup prompt. Enter the **Document root path** and click **+** to save it, or **Next** to save and continue onboarding. Wait for **Host documents synchronized** before running the dry-run test or indexing.
+
+The host agent runs under your host user account and accepts absolute paths such as `/mnt/knowledge` or `C:\Users\Name\Documents`. It polls the dashboard, applies the indexing policy before transfer, and copies only changed eligible documents. It checks for additions and deletions every five minutes. The dashboard blocks indexing until the selected folder has synchronized and the agent is connected. Scheduled indexing then uses the existing incremental hash state, so unchanged documents are not embedded again.
 
 The agent stores its pairing key in `~/.config/knowledge-mcp/agent.json` and logs to `~/.config/knowledge-mcp/agent.log`. On Linux, `install` creates a systemd user service and tries to enable lingering so it starts at boot; if it cannot, it prints the one-time `sudo loginctl enable-linger USER` command. Use `systemctl --user status knowledge-mcp-agent.service` to check it. On Windows, `install` creates a scheduled task that starts at sign-in. The host user must have read access to the chosen folder. To rotate the key, generate another in the dashboard and run `install` again. Treat the app volume as private: it contains a copy of eligible host documents.
 

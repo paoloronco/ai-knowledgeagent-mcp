@@ -2,7 +2,7 @@
 
 ![Currently under development](https://img.shields.io/badge/status-Currently%20under%20development-orange)
 
-Search your documents through an MCP server. The Docker image contains the Web UI, ingestion service, MCP server, and Qdrant. A small host agent lets the dashboard select any document folder on the Docker host without changing Docker mounts. The dashboard also supports existing read-only bind mounts. Review the policy, run indexing, schedule updates, and enable or disable MCP. There is no browser document upload.
+Search your documents through an MCP server. The Docker image includes the dashboard, ingestion service, MCP server, and Qdrant. Use the dashboard to select a document root, configure indexing, schedule updates, and manage services.
 
 ## Docker quick start
 
@@ -12,23 +12,14 @@ With a recent Docker Compose, start the application from any directory with one 
 docker compose -f https://github.com/paoloronco/ai-knowledgeagent-mcp.git up -d
 ```
 
-The same command starts it again later. If your Compose version cannot read a Git repository, clone this repository once and run `docker compose up -d` in its directory. [compose.yaml](compose.yaml) supplies the image, container name, restart policy, ports 8080 and 8000, and persistent volumes. Docker downloads the image on the first start. `docker run -d knowledge-mcp` cannot provide these settings: image `EXPOSE` does not publish fixed host ports, and restart and named volume options belong to the container configuration.
+- Open `http://HOST_IP:8080`.
+- Onboarding guides you through dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a dry-run test, and initial indexing.
+- To select a folder on the Docker host, [install the host agent](docs/docker.md#select-a-host-folder-without-changing-docker) once and pair it in **Document access settings**.
+- After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`.
+- Use the dashboard to manage services and schedule incremental indexing.
+- Two persistent Docker volumes retain documents, settings, indexing state, the model cache, and Qdrant data across container updates.
 
-Open `http://HOST_IP:8080` from a device on the same LAN. Enable dashboard login for host folder access. On the Docker **host**, install Python 3.10+ and run this one-time setup from a repository clone:
-
-```bash
-git clone https://github.com/paoloronco/ai-knowledgeagent-mcp.git
-cd ai-knowledgeagent-mcp
-python knowledge-mcp/host_agent.py install --url http://127.0.0.1:8080
-```
-
-In the dashboard, open **Document access settings**, choose **Folder on the Docker host**, generate a pairing key, and paste it into the agent's setup prompt. Enter the **Document root path**, for example `/mnt/knowledge`, and click **+** to save it, or **Next** to save and continue onboarding. The entire folder is selected; the [indexing policy](knowledge-mcp/mcp/index-policy.yaml) controls which documents are eligible. The agent runs under your host user, reads that folder, and synchronizes eligible files into the persistent application volume. Changing the dashboard path later requires no Docker change. Wait until the dashboard reports **Host documents synchronized**, review the policy, run the ten-document test, and start indexing. The MCP endpoint is `http://HOST_IP:8000/mcp` when enabled; it is for MCP clients, not a browser page.
-
-The bundled directory exclusions are mandatory, including `coverage`, `cache`, `.cache`, `vendor`, `.stversions`, `sample-folder`, `sample-folder`, `sample-folder`, and `sample-folder`. Older saved policies gain any missing exclusions at startup. After upgrading an existing index, run **Run incremental update** to remove previously indexed documents from those folders, then restart MCP. If no eligible documents remain, use `python ingestion/ingest.py --allow-empty` from `knowledge-mcp` to intentionally clear the index.
-
-The two named volumes keep settings, indexing state, model cache, Qdrant data, synchronized host documents, and any documents uploaded by older versions. Do not remove them if you want to keep the index. Qdrant listens only inside the container and is not published to the host.
-
-Ports 8080 and 8000 are published on all Docker host interfaces. The Web UI has an optional password; the MCP server still has no built-in login. Restrict access to a trusted LAN with a firewall, and add an authenticated proxy before exposing either port to the Internet. Use HTTPS when entering the dashboard password over a network.
+[compose.yaml](compose.yaml) provides the container name, restart policy, ports, and volumes. With a local repository clone, run `docker compose up -d`.
 
 ### Update or stop
 
