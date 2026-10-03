@@ -28,7 +28,23 @@ Keep those volumes; removing them loses the dashboard settings, indexing state, 
 
 ## Select a host folder without changing Docker
 
-Install Python 3.10+ on the Docker host, then run:
+In **Document folders**, enter any absolute **Document root path**, such as `/mnt/documents`, `/mnt/knowledge`, or `C:\Users\Name\Documents`, and click **+**. With the default **Automatic** location, the app uses a folder already visible inside the container directly; other paths are sent to the host service. Existing installations also use this automatic selection when you save a new path.
+
+If **Host service disconnected** appears under the path, enable dashboard login and open **Connect host service** in the same section:
+
+1. Download the host service ZIP from the dashboard and extract it on the computer running Docker.
+2. Generate a pairing key.
+3. With Python 3.10+ installed on that computer, run the following command from the extracted folder and paste the key when prompted:
+
+```bash
+python host_agent.py install --url http://127.0.0.1:8080
+```
+
+Install the service once. It reads the selected host folder and synchronizes eligible documents into the app's persistent storage. Changing the root from the dashboard requires no Docker mount changes or container restart. The source folder stays on the host at the path you chose; the container indexes the synchronized copy.
+
+The status under the path shows connection errors, synchronization progress, and the eligible document count. **Next** verifies the host folder before continuing onboarding. A missing service is reported immediately, and inaccessible folders report their read error instead of appearing empty.
+
+For installation from a repository checkout, use:
 
 ```bash
 git clone https://github.com/paoloronco/ai-knowledgeagent-mcp.git
@@ -36,11 +52,9 @@ cd ai-knowledgeagent-mcp
 python knowledge-mcp/host_agent.py install --url http://127.0.0.1:8080
 ```
 
-Enable dashboard login and open **Document access settings** in **Service health** during onboarding or in **Services** on the dashboard. Choose **Folder on the Docker host**, generate a pairing key, and paste it into the agent's setup prompt. Enter the **Document root path** and click **+** to save it, or **Next** to save and continue onboarding. Wait for **Host documents synchronized** before running the dry-run test or indexing.
+The host agent runs under your host user account. It polls the dashboard, applies the indexing policy before transfer, and copies only changed eligible documents. It checks for additions and deletions every five minutes. The dashboard blocks indexing until the selected folder has synchronized and the agent is connected. Scheduled indexing then uses the existing incremental hash state, so unchanged documents are not embedded again. You can force host access with **Folder on the Docker host** in **Document access settings** if the same path also exists inside the container.
 
-The host agent runs under your host user account and accepts absolute paths such as `/mnt/knowledge` or `C:\Users\Name\Documents`. It polls the dashboard, applies the indexing policy before transfer, and copies only changed eligible documents. It checks for additions and deletions every five minutes. The dashboard blocks indexing until the selected folder has synchronized and the agent is connected. Scheduled indexing then uses the existing incremental hash state, so unchanged documents are not embedded again.
-
-The agent stores its pairing key in `~/.config/knowledge-mcp/agent.json` and logs to `~/.config/knowledge-mcp/agent.log`. On Linux, `install` creates a systemd user service and tries to enable lingering so it starts at boot; if it cannot, it prints the one-time `sudo loginctl enable-linger USER` command. Use `systemctl --user status knowledge-mcp-agent.service` to check it. On Windows, `install` creates a scheduled task that starts at sign-in. The host user must have read access to the chosen folder. To rotate the key, generate another in the dashboard and run `install` again. Treat the app volume as private: it contains a copy of eligible host documents.
+The agent stores its pairing key in `~/.config/knowledge-mcp/agent.json`, logs to `~/.config/knowledge-mcp/agent.log`, and installs its Python files under `~/.config/knowledge-mcp/runtime`. The downloaded ZIP and extracted folder can be removed after installation. On Linux, `install` creates a systemd user service and tries to enable lingering so it starts at boot; if it cannot, it prints the one-time `sudo loginctl enable-linger USER` command. Use `systemctl --user status knowledge-mcp-agent.service` to check it. On Windows, `install` creates a scheduled task that starts at sign-in. The host user must have read access to the chosen folder. To rotate the key, generate another in the dashboard and run `install` again. Treat the app volume as private: it contains a copy of eligible host documents.
 
 ## Compose with an existing document folder
 

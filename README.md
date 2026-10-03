@@ -14,7 +14,7 @@ docker compose -f https://github.com/paoloronco/ai-knowledgeagent-mcp.git up -d
 
 - Open `http://HOST_IP:8080`.
 - Onboarding guides you through dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a dry-run test, and initial indexing.
-- To select a folder on the Docker host, [install the host agent](docs/docker.md#select-a-host-folder-without-changing-docker) once and pair it in **Document access settings**.
+- Enter the document root path you want to use. For a folder outside the container, **Connect host service** in **Document folders** provides the [download and one-time setup](docs/docker.md#select-a-host-folder-without-changing-docker); later folder changes are made entirely from the dashboard.
 - After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`.
 - Use the dashboard to manage services and schedule incremental indexing.
 - Two persistent Docker volumes retain documents, settings, indexing state, the model cache, and Qdrant data across container updates.

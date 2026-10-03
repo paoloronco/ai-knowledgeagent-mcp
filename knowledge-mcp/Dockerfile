@@ -24,6 +24,7 @@ COPY --from=qdrant /qdrant/config /qdrant/config
 COPY --from=qdrant /qdrant/static /qdrant/static
 COPY ingestion/ ingestion/
 COPY mcp/ mcp/
+COPY host_agent.py .
 
 EXPOSE 8080 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)" || exit 1

@@ -1,6 +1,7 @@
 import ipaddress
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import sys
 import threading
 import time
 import urllib.request
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -147,15 +149,15 @@ class Controller:
             tmp.replace(POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
-        self.config = {"source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "setup_step": 0 if first_start else 6}
+        self.config = {"source_selection": "auto", "source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "setup_step": 0 if first_start else 6}
         migrated = False
         if CONFIG.exists():
             stored = json.loads(CONFIG.read_text(encoding="utf-8"))
             self.config.update(stored)
             if "setup_step" not in stored and not self.config["onboarding_complete"]:
                 self.config["setup_step"] = 1 if AUTH.exists() else 0
-            migrated = "folders" not in stored
-            if migrated:
+            migrated = "folders" not in stored or "source_selection" not in stored
+            if "folders" not in stored:
                 self.config["folders"] = [stored.get("subfolder", "")]
         if self.config["source_mode"] == "host_agent":
             HOST_SOURCE.mkdir(parents=True, exist_ok=True)
@@ -269,6 +271,7 @@ class Controller:
             if self.config["source_mode"] != "host_agent" or not self.config["host_root"]:
                 raise ValueError("Select a host folder first")
             self.config["sync_request"] += 1
+            self.agent_error_text = ""
             self._save()
             return {"requested": True, "sync_request": self.config["sync_request"]}
 
@@ -429,12 +432,24 @@ class Controller:
         self.mcp = None
 
     def update(self, values):
-        mode = values.get("source_mode", self.config["source_mode"])
+        selection = values.get("source_selection", self.config["source_selection"])
+        if "document_root" in values:
+            chosen = host_root(values["document_root"])
+            visible = Path(chosen).is_absolute() and Path(chosen).exists()
+            mode = ("container" if visible else "host_agent") if selection == "auto" else selection
+            values = {**values, "host_root" if mode == "host_agent" else "source_root": chosen}
+        else:
+            # Retain compatibility with clients that explicitly select a source mode.
+            mode = values.get("source_mode", self.config["source_mode"])
+            if "source_mode" in values:
+                selection = mode
+        if selection not in ("auto", "host_agent", "container"):
+            raise ValueError("Invalid document location")
         if mode not in ("host_agent", "container"):
             raise ValueError("Invalid document source mode")
         if mode == "host_agent":
             if not self.password_enabled():
-                raise ValueError("Enable dashboard login before selecting a host folder")
+                raise ValueError("This folder is on the host. Enable dashboard login, then connect the host service from Document folders.")
             selected_host = host_root(values.get("host_root", self.config["host_root"]))
             selected_root = HOST_SOURCE
             selected_root.mkdir(parents=True, exist_ok=True)
@@ -456,7 +471,7 @@ class Controller:
             interval_changed = interval != self.config["interval_hours"]
             if root_changed and self.ingest and self.ingest.poll() is None:
                 raise ValueError("Wait until indexing finishes before changing folders")
-            self.config.update(source_mode=mode, host_root=selected_host, source_root=str(selected_root), folders=folders, interval_hours=interval, mcp_enabled=enabled)
+            self.config.update(source_selection=selection, source_mode=mode, host_root=selected_host, source_root=str(selected_root), folders=folders, interval_hours=interval, mcp_enabled=enabled)
             if source_changed:
                 self.config["sync_revision"] += 1
                 self.sync_in_progress = False
@@ -562,10 +577,12 @@ class Controller:
                 "index_running": bool(self.ingest and self.ingest.poll() is None),
                 "source_ready": source_ready,
                 "agent_connected": time.time() - self.agent_seen_at < 60,
+                "agent_paired": AGENT_AUTH.exists(),
                 "agent_synced": self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress,
                 "agent_syncing": self.sync_in_progress,
                 "agent_error": self.agent_error_text,
                 "agent_last_sync_at": self.agent_manifest.get("synced_at"),
+                "agent_file_count": len(self.agent_manifest.get("files", {})) if self.agent_manifest.get("revision") == self.config["sync_revision"] else 0,
                 "agent_sync_request_completed": self.agent_manifest.get("sync_request", -1),
                 "source_root": self.config["source_root"],
                 "last_result": self.last_result,
@@ -657,6 +674,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/status":
             self.send(200, json.dumps(controller.status()))
+        elif self.path == "/host-agent.zip":
+            bundle = io.BytesIO()
+            with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.write(ROOT / "host_agent.py", "host_agent.py")
+                archive.write(ROOT / "mcp" / "host_sync.py", "mcp/host_sync.py")
+            self.send(200, bundle.getvalue(), "application/zip")
         elif self.path == "/api/policy":
             content = POLICY.read_text(encoding="utf-8")
             self.send(200, json.dumps({"content": content, "policy": yaml.safe_load(content)}))

@@ -7,6 +7,7 @@ import http.client
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -59,7 +60,10 @@ def inventory(root, policy):
     if any(part.casefold() in restricted for part in folder.parts):
         raise ValueError("The selected host folder is excluded by the indexing policy")
     files = {}
-    for base, dirs, names in os.walk(folder, followlinks=False):
+    def unreadable(error):
+        raise RuntimeError(f"Could not read host folder {error.filename}: {error.strerror}") from error
+
+    for base, dirs, names in os.walk(folder, followlinks=False, onerror=unreadable):
         current = Path(base)
         relative_dir = current.relative_to(folder)
         dirs[:] = sorted(name for name in dirs if not (current / name).is_symlink() and name.casefold() not in restricted and (relative_dir.parts or name.casefold() not in {x.casefold() for x in policy["exclude_top_level"]}))
@@ -167,11 +171,18 @@ def install(url, config_path):
     request(base, token, "/api/agent/task")
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps({"url": base, "token": token}), encoding="utf-8")
+    # Keep the service independent of a downloaded archive or repository checkout.
+    runtime = config_path.resolve().parent / "runtime"
+    (runtime / "mcp").mkdir(parents=True, exist_ok=True)
+    for source, destination in ((Path(__file__).resolve(), runtime / "host_agent.py"), (Path(__file__).resolve().parent / "mcp" / "host_sync.py", runtime / "mcp" / "host_sync.py")):
+        if source != destination:
+            shutil.copyfile(source, destination)
+    agent_script = runtime / "host_agent.py"
     if os.name == "posix":
         config_path.chmod(0o600)
         unit = Path.home() / ".config" / "systemd" / "user" / "knowledge-mcp-agent.service"
         unit.parent.mkdir(parents=True, exist_ok=True)
-        unit.write_text("[Unit]\nDescription=Knowledge MCP host document agent\nAfter=network-online.target\n\n[Service]\nExecStart=\"" + sys.executable + "\" \"" + str(Path(__file__).resolve()) + "\" run --config \"" + str(config_path) + "\"\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n", encoding="utf-8")
+        unit.write_text("[Unit]\nDescription=Knowledge MCP host document agent\nAfter=network-online.target\n\n[Service]\nExecStart=\"" + sys.executable + "\" \"" + str(agent_script) + "\" run --config \"" + str(config_path.resolve()) + "\"\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n", encoding="utf-8")
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
         subprocess.run(["systemctl", "--user", "enable", "knowledge-mcp-agent.service"], check=True)
         subprocess.run(["systemctl", "--user", "restart", "knowledge-mcp-agent.service"], check=True)
@@ -182,12 +193,12 @@ def install(url, config_path):
     elif os.name == "nt":
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         executable = pythonw if pythonw.exists() else Path(sys.executable)
-        command = f'"{executable}" "{Path(__file__).resolve()}" run --config "{config_path}"'
+        command = f'"{executable}" "{agent_script}" run --config "{config_path.resolve()}"'
         subprocess.run(["schtasks", "/Create", "/SC", "ONLOGON", "/TN", "KnowledgeMCPHostAgent", "/TR", command, "/F"], check=True)
         subprocess.run(["schtasks", "/Run", "/TN", "KnowledgeMCPHostAgent"], check=True)
         print("Host agent installed and started. It restarts when you sign in.")
     else:
-        print(f"Config saved at {config_path}. Run: {sys.executable} {Path(__file__).resolve()} run --config {config_path}")
+        print(f"Config saved at {config_path}. Run: {sys.executable} {agent_script} run --config {config_path.resolve()}")
 
 
 def main():

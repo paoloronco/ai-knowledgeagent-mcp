@@ -1,10 +1,13 @@
 import json
+import io
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -137,6 +140,55 @@ class AdminBoundaryTest(unittest.TestCase):
                 self.assertEqual(restored.config["source_root"], str(mounted))
                 restored.close()
 
+    def test_automatic_path_replaces_legacy_container_location_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            source = data / "documents"
+            (data / "config.json").write_text(json.dumps({"source_mode": "container", "source_root": str(source), "folders": [""]}), encoding="utf-8")
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "MANAGED_SOURCE", source),
+                patch.object(app, "SOURCE", source), patch.object(app, "CONFIG", data / "config.json"),
+                patch.object(app, "HOST_SOURCE", data / "host-documents"), patch.object(app, "AUTH", data / "auth.json"),
+                patch.object(app, "POLICY", data / "index-policy.yaml"), patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+            ):
+                controller = app.Controller()
+                self.assertEqual(controller.config["source_selection"], "auto")
+                self.assertEqual(controller.config["source_root"], str(source))
+                controller.set_password("strong-test-password")
+                result = controller.update({"document_root": "/mnt/documents", "source_selection": "auto", "folders": [""]})
+                self.assertEqual(result["source_mode"], "host_agent")
+                self.assertEqual(result["host_root"], "/mnt/documents")
+                self.assertEqual(controller._env()["KNOWLEDGE_ROOT"], str(data / "host-documents"))
+                self.assertFalse(controller.status()["source_ready"])
+                with self.assertRaisesRegex(ValueError, "host agent"):
+                    controller.run_index(dry_run=True)
+                controller.update({"document_root": r"D:\User folders\Documents", "source_selection": "host_agent", "folders": [""]})
+                controller.close()
+                restored = app.Controller()
+                self.assertEqual(restored.config["host_root"], r"D:\User folders\Documents")
+                self.assertEqual(restored.config["source_mode"], "host_agent")
+                restored.close()
+
+    def test_automatic_path_reads_visible_roots_and_rejects_application_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            mounted = Path(tmp) / "document-mount"
+            mounted.mkdir()
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", data / "documents"),
+                patch.object(app, "MANAGED_SOURCE", data / "documents"), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
+                patch.object(app, "AUTH", data / "auth.json"), patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+            ):
+                controller = app.Controller()
+                result = controller.update({"document_root": str(mounted), "source_selection": "auto", "folders": [""]})
+                self.assertEqual(result["source_selection"], "auto")
+                self.assertEqual(result["source_mode"], "container")
+                self.assertTrue(controller.status()["source_ready"])
+                with self.assertRaisesRegex(ValueError, "Application data"):
+                    controller.update({"document_root": str(data), "source_selection": "auto"})
+                controller.close()
+
     def test_source_and_policy_cannot_escape_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source"
@@ -205,6 +257,13 @@ class AdminBoundaryTest(unittest.TestCase):
                             urllib.request.urlopen(upload)
                         self.assertEqual(denied.exception.code, 404)
                         self.assertFalse((source / "notes" / "example.md").exists())
+                        with urllib.request.urlopen(url + "/host-agent.zip") as response:
+                            archive = zipfile.ZipFile(io.BytesIO(response.read()))
+                        self.assertEqual(set(archive.namelist()), {"host_agent.py", "mcp/host_sync.py"})
+                        extracted = data / "downloaded-agent"
+                        archive.extractall(extracted)
+                        result = subprocess.run([sys.executable, str(extracted / "host_agent.py"), "--help"], capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
                         (source / "notes").mkdir()
                         config = {"folders": [str(source / "notes")], "interval_hours": 2}
                         request = urllib.request.Request(url + "/api/config", data=json.dumps(config).encode(), headers={"Content-Type": "application/json", "X-Control-Token": app.TOKEN})
@@ -289,7 +348,11 @@ class AdminBoundaryTest(unittest.TestCase):
                 controller = app.Controller()
                 controller.set_password("strong-test-password")
                 token = controller.agent_pair()["token"]
-                controller.update({"source_mode": "host_agent", "host_root": str(host), "folders": [""]})
+                # The test host and container share a process; hide the host path only
+                # while resolving the dashboard selection, as Docker would do.
+                exists = Path.exists
+                with patch.object(Path, "exists", lambda path: False if path == host else exists(path)):
+                    controller.update({"document_root": str(host), "source_selection": "auto", "folders": [""]})
                 with patch.object(app, "controller", controller):
                     server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
                     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -301,6 +364,8 @@ class AdminBoundaryTest(unittest.TestCase):
                         self.assertEqual((host_mirror / "notes" / "first.md").read_text(), "first version")
                         self.assertFalse((host_mirror / "secrets" / "private.md").exists())
                         self.assertTrue(controller.status()["source_ready"])
+                        self.assertEqual(controller.status()["agent_file_count"], 1)
+                        self.assertEqual(controller._env()["KNOWLEDGE_ROOT"], str(host_mirror))
                         (host / "notes" / "first.md").write_text("second version", encoding="utf-8")
                         host_agent.sync(url, token, task)
                         self.assertEqual((host_mirror / "notes" / "first.md").read_text(), "second version")
@@ -336,6 +401,37 @@ class AdminBoundaryTest(unittest.TestCase):
                         server.shutdown()
                         server.server_close()
                         controller.close()
+
+    def test_unreadable_host_directory_is_reported_instead_of_syncing_empty_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def denied_walk(folder, **options):
+                options["onerror"](PermissionError(13, "Permission denied", str(folder / "private")))
+                return iter(())
+
+            policy = app.yaml.safe_load(app.DEFAULT_POLICY.read_text(encoding="utf-8"))
+            with patch.object(host_agent.os, "walk", denied_walk):
+                with self.assertRaisesRegex(RuntimeError, "Permission denied"):
+                    host_agent.inventory(tmp, policy)
+
+    def test_host_service_install_keeps_its_runtime_independent_of_downloaded_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            config = data / "agent.json"
+            with (
+                patch.object(host_agent.getpass, "getpass", return_value="test-pairing-key"),
+                patch.object(host_agent, "request", return_value={}),
+                patch.object(Path, "home", return_value=data),
+                patch.object(host_agent.subprocess, "run", return_value=Mock(returncode=0)) as run,
+            ):
+                host_agent.install("http://127.0.0.1:8080", config)
+            script = data / "runtime" / "host_agent.py"
+            self.assertTrue(script.is_file())
+            self.assertTrue((data / "runtime" / "mcp" / "host_sync.py").is_file())
+            unit = data / ".config" / "systemd" / "user" / "knowledge-mcp-agent.service"
+            if host_agent.os.name == "posix":
+                self.assertIn(str(script), unit.read_text(encoding="utf-8"))
+            else:
+                self.assertIn(str(script), run.call_args_list[0].args[0][run.call_args_list[0].args[0].index("/TR") + 1])
 
 
 if __name__ == "__main__":

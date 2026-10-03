@@ -29,6 +29,7 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r knowledge-mcp/requirements.txt
           python -m unittest discover -s tests -q
+          node --test tests/test_dashboard.js
           docker compose config --quiet
           docker compose config --format json > "$RUNNER_TEMP/knowledge-compose.json"
           python - <<'PY'
@@ -89,7 +90,7 @@ jobs:
           token = re.search(r"const token='([^']+)'", page).group(1)
           request = urllib.request.Request(
               base + "/api/config",
-              data=json.dumps({"source_mode": "container", "source_root": "/mnt/knowledge", "folders": [""], "interval_hours": 0}).encode(),
+              data=json.dumps({"document_root": "/mnt/knowledge", "source_selection": "auto", "folders": [""], "interval_hours": 0}).encode(),
               headers={"Content-Type": "application/json", "X-Control-Token": token},
           )
           with urllib.request.urlopen(request, timeout=10) as response:
@@ -110,11 +111,20 @@ jobs:
               cookie = response.headers["Set-Cookie"].split(";", 1)[0]
           with post("/api/agent/pair", {}, cookie) as response:
               agent_token = json.load(response)["token"]
-          with post("/api/config", {"source_mode": "host_agent", "host_root": str(Path(os.environ["RUNNER_TEMP"]) / "knowledge-agent-docs"), "folders": [""]}, cookie) as response:
-              assert json.load(response)["source_mode"] == "host_agent"
+          host_root = str(Path(os.environ["RUNNER_TEMP"]) / "knowledge-agent-docs")
+          with post("/api/config", {"document_root": host_root, "source_selection": "auto", "folders": [""]}, cookie) as response:
+              config = json.load(response)
+          assert config["source_mode"] == "host_agent" and config["host_root"] == host_root
+          assert config["source_selection"] == "auto"
+          with urllib.request.urlopen(urllib.request.Request(base + "/host-agent.zip", headers={"Cookie": cookie}), timeout=3) as response:
+              import io
+              import zipfile
+              archive = zipfile.ZipFile(io.BytesIO(response.read()))
+              assert set(archive.namelist()) == {"host_agent.py", "mcp/host_sync.py"}
           host_agent.sync(base, agent_token, host_agent.request(base, agent_token, "/api/agent/task"))
           with urllib.request.urlopen(urllib.request.Request(base + "/api/status", headers={"Cookie": cookie}), timeout=3) as response:
-              assert json.load(response)["source_ready"]
+              status = json.load(response)
+          assert status["source_ready"] and status["agent_file_count"] == 1
           request = urllib.request.Request(base + "/api/upload?path=blocked.md", data=b"blocked", headers={"X-Control-Token": token, "Cookie": cookie})
           try:
               urllib.request.urlopen(request, timeout=3)
