@@ -162,7 +162,7 @@ async function refresh() {
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready));
     $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
-    const syncState = !s.agent_connected ? 'Host agent disconnected' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
+    const syncState = !s.agent_connected ? 'Host agent disconnected' : s.agent_error ? 'Host sync failed: ' + s.agent_error : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
     $('setup-agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';

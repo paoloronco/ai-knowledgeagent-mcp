@@ -164,6 +164,7 @@ class Controller:
         self.sessions = {}
         self.login_attempts = {}
         self.agent_seen_at = 0
+        self.agent_error_text = ""
         self.sync_in_progress = False
         self.agent_manifest = json.loads(AGENT_MANIFEST.read_text(encoding="utf-8")) if AGENT_MANIFEST.exists() else {"revision": -1, "files": {}}
         self.stopping = False
@@ -248,6 +249,13 @@ class Controller:
             self._save()
             return {"requested": True}
 
+    def agent_error(self, values):
+        with self.lock:
+            if values.get("revision") == self.config["sync_revision"]:
+                self.agent_error_text = str(values.get("error", "Host sync failed"))[:512]
+                self.sync_in_progress = False
+            return {"recorded": True}
+
     def agent_plan(self, values):
         files = values.get("files")
         revision = values.get("revision")
@@ -328,6 +336,7 @@ class Controller:
             tmp.replace(AGENT_MANIFEST)
             self.agent_manifest = {"revision": revision, "files": files, "synced_at": synced_at}
             self.sync_in_progress = False
+            self.agent_error_text = ""
             return {"synced": len(files)}
 
     def _start_qdrant(self):
@@ -422,6 +431,7 @@ class Controller:
             if source_changed:
                 self.config["sync_revision"] += 1
                 self.sync_in_progress = False
+                self.agent_error_text = ""
             if root_changed:
                 self.invalidate_result()
             if interval_changed:
@@ -520,6 +530,7 @@ class Controller:
                 "agent_connected": time.time() - self.agent_seen_at < 60,
                 "agent_synced": self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress,
                 "agent_syncing": self.sync_in_progress,
+                "agent_error": self.agent_error_text,
                 "agent_last_sync_at": self.agent_manifest.get("synced_at"),
                 "source_root": self.config["source_root"],
                 "last_result": self.last_result,
@@ -528,7 +539,7 @@ class Controller:
             }
 
     def host_source_ready(self):
-        return bool(self.config["host_root"] and self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress and time.time() - self.agent_seen_at < 60)
+        return bool(self.config["host_root"] and self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress and not self.agent_error_text and time.time() - self.agent_seen_at < 60)
 
     def close(self):
         with self.lock:
@@ -684,6 +695,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = controller.agent_plan(values)
                 elif route.path == "/api/agent/commit":
                     result = controller.agent_commit(values)
+                elif route.path == "/api/agent/error":
+                    result = controller.agent_error(values)
                 else:
                     self.send(404, json.dumps({"error": "Not found"}))
                     return

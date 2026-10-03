@@ -131,13 +131,14 @@ def validate_url(value):
 
 
 def run(config_path, once=False, scan_seconds=300):
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    base = validate_url(config["url"])
-    token = config["token"]
     last_signature = None
     last_scan = 0
     while True:
+        task = None
         try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            base = validate_url(config["url"])
+            token = config["token"]
             task = request(base, token, "/api/agent/task")
             signature = (task["revision"], task["sync_request"], json.dumps(task["policy"], sort_keys=True))
             if task["source_mode"] == "host_agent" and task["host_root"] and (signature != last_signature or time.time() - last_scan >= scan_seconds):
@@ -146,8 +147,13 @@ def run(config_path, once=False, scan_seconds=300):
                 last_scan = time.time()
             if once:
                 return
-        except Exception:
+        except Exception as error:
             LOG.exception("Host sync failed; retrying")
+            if task and task.get("source_mode") == "host_agent":
+                try:
+                    request(base, token, "/api/agent/error", {"revision": task["revision"], "error": str(error)})
+                except Exception:
+                    pass
             if once:
                 raise
         time.sleep(15)
@@ -167,14 +173,18 @@ def install(url, config_path):
         unit.parent.mkdir(parents=True, exist_ok=True)
         unit.write_text("[Unit]\nDescription=Knowledge MCP host document agent\nAfter=network-online.target\n\n[Service]\nExecStart=\"" + sys.executable + "\" \"" + str(Path(__file__).resolve()) + "\" run --config \"" + str(config_path) + "\"\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n", encoding="utf-8")
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "--user", "enable", "--now", "knowledge-mcp-agent.service"], check=True)
+        subprocess.run(["systemctl", "--user", "enable", "knowledge-mcp-agent.service"], check=True)
+        subprocess.run(["systemctl", "--user", "restart", "knowledge-mcp-agent.service"], check=True)
+        linger = subprocess.run(["loginctl", "enable-linger", getpass.getuser()], capture_output=True, text=True)
+        if linger.returncode:
+            print(f"To keep the agent running after logout and start it at boot, run: sudo loginctl enable-linger {getpass.getuser()}")
         print("Host agent installed and started. It runs under your user account.")
     elif os.name == "nt":
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         executable = pythonw if pythonw.exists() else Path(sys.executable)
         command = f'"{executable}" "{Path(__file__).resolve()}" run --config "{config_path}"'
         subprocess.run(["schtasks", "/Create", "/SC", "ONLOGON", "/TN", "KnowledgeMCPHostAgent", "/TR", command, "/F"], check=True)
-        subprocess.Popen([str(executable), str(Path(__file__).resolve()), "run", "--config", str(config_path)], creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(["schtasks", "/Run", "/TN", "KnowledgeMCPHostAgent"], check=True)
         print("Host agent installed and started. It restarts when you sign in.")
     else:
         print(f"Config saved at {config_path}. Run: {sys.executable} {Path(__file__).resolve()} run --config {config_path}")

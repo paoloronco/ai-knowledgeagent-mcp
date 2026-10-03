@@ -252,6 +252,11 @@ class AdminBoundaryTest(unittest.TestCase):
                         self.assertEqual((host_mirror / "second.md").read_text(), "another folder")
                         self.assertFalse((host_mirror / "old.md").exists())
                         self.assertEqual(json.loads((data / "config.json").read_text())["host_root"], str(another_host))
+                        host_agent.request(url, token, "/api/agent/error", {"revision": controller.config["sync_revision"], "error": "Folder unavailable"})
+                        self.assertFalse(controller.status()["source_ready"])
+                        self.assertIn("Folder unavailable", controller.status()["agent_error"])
+                        host_agent.sync(url, token, host_agent.request(url, token, "/api/agent/task"))
+                        self.assertTrue(controller.status()["source_ready"])
                         bad = urllib.request.Request(url + "/api/agent/plan", data=b"{}", headers={"X-Agent-Token": "wrong"})
                         with self.assertRaises(urllib.error.HTTPError) as denied:
                             urllib.request.urlopen(bad)
