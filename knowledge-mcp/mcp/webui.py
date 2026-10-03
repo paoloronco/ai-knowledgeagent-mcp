@@ -141,11 +141,13 @@ class Controller:
             shutil.copyfile(DEFAULT_POLICY, POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
-        self.config = {"source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start}
+        self.config = {"source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "setup_step": 0 if first_start else 6}
         migrated = False
         if CONFIG.exists():
             stored = json.loads(CONFIG.read_text(encoding="utf-8"))
             self.config.update(stored)
+            if "setup_step" not in stored and not self.config["onboarding_complete"]:
+                self.config["setup_step"] = 1 if AUTH.exists() else 0
             migrated = "folders" not in stored
             if migrated:
                 self.config["folders"] = [stored.get("subfolder", "")]
@@ -196,6 +198,9 @@ class Controller:
             if os.name == "posix":
                 AUTH.chmod(0o600)
             self.sessions.clear()
+            if not self.config["onboarding_complete"] and self.config["setup_step"] < 1:
+                self.config["setup_step"] = 1
+                self._save()
 
     def check_password(self, password):
         if not isinstance(password, str) or not AUTH.exists():
@@ -207,7 +212,19 @@ class Controller:
     def complete_onboarding(self):
         with self.lock:
             self.config["onboarding_complete"] = True
+            self.config["setup_step"] = max(self.config["setup_step"], 5)
             self._save()
+
+    def advance_setup(self, step):
+        if type(step) is not int or not 1 <= step <= 5:
+            raise ValueError("Invalid setup step")
+        with self.lock:
+            if not self.config["onboarding_complete"] and step > self.config["setup_step"]:
+                if step != self.config["setup_step"] + 1:
+                    raise ValueError("Complete the previous setup step first")
+                self.config["setup_step"] = step
+                self._save()
+            return {"setup_step": self.config["setup_step"]}
 
     def invalidate_result(self):
         with self.lock:
@@ -472,6 +489,9 @@ class Controller:
         code = process.wait()
         with self.lock:
             self.last_result = {"exit_code": code, "dry_run": dry_run, "finished_at": time.time()}
+            if code == 0 and not dry_run and self.config["setup_step"] >= 5:
+                self.config["setup_step"] = 6
+                self._save()
             result_file = DATA / "last-result.json"
             tmp = result_file.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.last_result), encoding="utf-8")
@@ -748,6 +768,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/onboarding":
                 controller.complete_onboarding()
                 result = {"complete": True}
+            elif self.path == "/api/onboarding/progress":
+                result = controller.advance_setup(values.get("step"))
             elif self.path == "/api/service":
                 result = controller.service(values.get("name"), values.get("action"))
             elif self.path == "/api/index":

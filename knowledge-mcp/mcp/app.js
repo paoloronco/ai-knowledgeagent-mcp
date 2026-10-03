@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
-let current = null, policy = null, selectedFolders = [''], availableFolders = [''], loadedSyncRevision = null;
+let current = null, policy = null, selectedFolders = [''], availableFolders = [''], loadedSyncRevision = null, wizardStep = 0;
+const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Dry-run test', 'Initial indexing'];
 
 async function api(path, data) {
   const options = data === undefined ? {} : {
@@ -14,12 +15,35 @@ function badge(name, good) {
   const el = document.createElement('span'); el.className = 'badge' + (good ? ' ok' : '');
   el.textContent = name + ': ' + (good ? 'ready' : 'unavailable'); return el;
 }
-function showStep(step) {
-  sessionStorage.setItem('knowledge-onboarding-step', String(step));
-  document.querySelectorAll('.step').forEach(el => el.classList.toggle('active', Number(el.dataset.step) === step));
-  $('wizard-progress').textContent = `Step ${step + 1} of 6`;
+function renderSetupProgress(status) {
+  const done = Math.max(0, Math.min(6, status.config.setup_step || 0));
+  $('setup-progress-bar').value = done;
+  $('wizard-progress').textContent = done === 6 ? 'Setup complete' : status.config.onboarding_complete ? status.index_running ? 'Initial indexing in progress · 5 of 6 steps complete' : 'Waiting for initial indexing · 5 of 6 steps complete' : `Step ${wizardStep + 1} of 6 · ${setupLabels[wizardStep]}`;
+  for (const item of $('setup-steps').children) {
+    const index = Number(item.dataset.progressStep);
+    item.classList.toggle('complete', index < done);
+    item.classList.toggle('current', index === wizardStep && index >= done);
+    item.classList.toggle('failed', index === 5 && done === 5 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0);
+    if (index === wizardStep && index >= done) item.setAttribute('aria-current', 'step');
+    else item.removeAttribute('aria-current');
+  }
+  if (done === 5 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0) $('wizard-progress').textContent = 'Initial indexing failed · review the log and retry';
 }
-function nextStep() { showStep(Math.min(5, Number(sessionStorage.getItem('knowledge-onboarding-step') || 0) + 1)); }
+function showStep(step) {
+  wizardStep = Math.max(0, Math.min(5, step));
+  document.querySelectorAll('.step').forEach(el => el.classList.toggle('active', Number(el.dataset.step) === wizardStep));
+  if (current) renderSetupProgress(current);
+  const list = $('setup-steps'), item = list.children[wizardStep];
+  if (item) list.scrollTo({left: item.offsetLeft - list.offsetLeft - (list.clientWidth - item.clientWidth) / 2, behavior: 'smooth'});
+}
+async function nextStep() {
+  try {
+    const step = Math.min(5, wizardStep + 1);
+    const result = await api('/api/onboarding/progress', {step});
+    current.config.setup_step = result.setup_step;
+    showStep(step);
+  } catch (e) { message(e.message, true); }
+}
 function sourceModeChanged() {
   const mode = document.activeElement?.id?.endsWith('source-mode') ? document.activeElement.value : current.config.source_mode;
   $('setup-source-mode').value = mode; $('dashboard-source-mode').value = mode;
@@ -51,9 +75,9 @@ async function setupSecurity() {
   try {
     if ($('login-enabled').checked) {
       await api('/api/security', {enabled: true, password: $('setup-password').value});
-      sessionStorage.setItem('knowledge-onboarding-step', '1'); location.reload(); return;
+      location.reload(); return;
     }
-    nextStep();
+    await nextStep();
   } catch (e) { message(e.message, true); }
 }
 async function setPassword() { try { await api('/api/security', {enabled: true, password: $('new-password').value}); location.reload(); } catch (e) { message(e.message, true); } }
@@ -104,7 +128,7 @@ async function saveFolders(advance = false, fromWizard = false) {
     selectedFolders = [...result.folders]; current.config = result; current.source_root = result.source_root;
     $('setup-source-root').value = mode === 'host_agent' ? result.host_root : result.source_root;
     $('dashboard-source-root').value = $('setup-source-root').value;
-    await loadFolders(); message(mode === 'host_agent' ? 'Host folder saved. Waiting for the agent to sync it.' : 'Document source saved.'); if (advance) nextStep(); await refresh();
+    await loadFolders(); message(mode === 'host_agent' ? 'Host folder saved. Waiting for the agent to sync it.' : 'Document source saved.'); if (advance) await nextStep(); await refresh();
   } catch (e) { message(e.message, true); }
 }
 
@@ -140,7 +164,7 @@ function formPolicy(id) {
   values.max_file_size_mb = Number(node.querySelector('[data-policy-size]').value); return values;
 }
 async function savePolicy(advance) {
-  try { await api('/api/policy', {policy: formPolicy(advance ? 'wizard-policy' : 'dashboard-policy')}); await loadPolicy(); message('Policy saved.'); if (advance) nextStep(); }
+  try { await api('/api/policy', {policy: formPolicy(advance ? 'wizard-policy' : 'dashboard-policy')}); await loadPolicy(); message('Policy saved.'); if (advance) await nextStep(); }
   catch (e) { message(e.message, true); }
 }
 async function saveYaml() { try { await api('/api/policy', {content: $('policy-yaml').value}); await loadPolicy(); message('YAML saved.'); } catch (e) { message(e.message, true); } }
@@ -168,13 +192,14 @@ async function startInitialIndex() {
   try {
     await waitForFreshHostSync();
     await api('/api/index', {dry_run: false}); await api('/api/onboarding', {});
-    sessionStorage.removeItem('knowledge-onboarding-step'); $('wizard').classList.add('hidden'); $('dashboard').classList.remove('hidden');
+    $('wizard').classList.add('hidden'); $('dashboard').classList.remove('hidden');
     message('Indexing started. Follow the log, then start MCP.'); await refresh();
   } catch (e) { message(e.message, true); }
 }
 async function refresh() {
   try {
     const s = await api('/api/status'); current = s;
+    renderSetupProgress(s);
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready));
     $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
@@ -194,8 +219,8 @@ async function refresh() {
     if (document.activeElement !== $('interval')) $('interval').value = s.config.interval_hours;
     if (s.last_result?.dry_run && !s.index_running) {
       $('dry-result').textContent = s.last_result.exit_code === 0 ? 'Test complete. Review the log.' : 'Test failed. Review the log.';
-      $('dry-next').disabled = s.last_result.exit_code !== 0;
     }
+    $('dry-next').disabled = s.config.setup_step < 5 && !(s.last_result?.dry_run && !s.index_running && s.last_result.exit_code === 0);
     $('wizard').classList.toggle('hidden', s.config.onboarding_complete); $('dashboard').classList.toggle('hidden', !s.config.onboarding_complete);
   } catch (e) { message(e.message, true); }
 }
@@ -209,7 +234,7 @@ async function start() {
     sourceModeChanged();
     $('interval').value = current.config.interval_hours;
     await Promise.all([loadFolders(), loadPolicy()]);
-    showStep(Number(sessionStorage.getItem('knowledge-onboarding-step') || 0)); await refresh(); setInterval(refresh, 3000);
+    showStep(Math.min(5, current.config.setup_step || 0)); await refresh(); setInterval(refresh, 3000);
   } catch (e) { message(e.message, true); }
 }
 start();

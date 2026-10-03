@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1] / "knowledge-mcp"
@@ -18,6 +18,38 @@ import host_agent
 
 
 class AdminBoundaryTest(unittest.TestCase):
+    def test_setup_progress_is_persisted_and_requires_successful_initial_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            source = data / "documents"
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", source),
+                patch.object(app, "MANAGED_SOURCE", source), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
+                patch.object(app, "AUTH", data / "auth.json"), patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+            ):
+                controller = app.Controller()
+                self.assertEqual(controller.config["setup_step"], 0)
+                controller.set_password("long-test-password")
+                self.assertEqual(controller.config["setup_step"], 1)
+                with self.assertRaisesRegex(ValueError, "previous setup step"):
+                    controller.advance_setup(3)
+                for step in range(2, 6):
+                    self.assertEqual(controller.advance_setup(step)["setup_step"], step)
+                with self.assertRaises(ValueError):
+                    controller.advance_setup(6)
+                controller.complete_onboarding()
+                controller._finish_index(Mock(wait=lambda: 1), False)
+                self.assertEqual(controller.config["setup_step"], 5)
+                controller._finish_index(Mock(wait=lambda: 0), True)
+                self.assertEqual(controller.config["setup_step"], 5)
+                controller._finish_index(Mock(wait=lambda: 0), False)
+                self.assertEqual(controller.config["setup_step"], 6)
+                controller.close()
+                restored = app.Controller()
+                self.assertEqual(restored.config["setup_step"], 6)
+                restored.close()
+
     def test_managed_source_is_created_on_first_start(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp)
