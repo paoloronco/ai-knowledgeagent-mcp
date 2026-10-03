@@ -26,14 +26,14 @@ DEFAULT_CONFIG = Path.home() / ".config" / "knowledge-mcp" / "agent.json"
 LOG = logging.getLogger("knowledge-host-agent")
 
 
-def request(base, token, route, payload=None, headers=None):
+def request(base, token, route, payload=None, headers=None, timeout=120):
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     request_headers = {"X-Agent-Token": token, **(headers or {})}
     if body is not None:
         request_headers["Content-Type"] = "application/json"
     req = urllib.request.Request(base + route, data=body, headers=request_headers)
     try:
-        with urllib.request.urlopen(req, timeout=120) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         try:
@@ -86,7 +86,7 @@ def resolve_host_folder(root, host_mount=None):
     return mount.joinpath(*resolved)
 
 
-def inventory(root, policy, host_mount=None):
+def inventory(root, policy, host_mount=None, progress=None):
     folder = resolve_host_folder(root, host_mount)
     if not folder.is_dir():
         raise ValueError(f"Host folder is unavailable: {root}")
@@ -99,6 +99,7 @@ def inventory(root, policy, host_mount=None):
     if any(part.casefold() in restricted for part in (*logical.parts, *original_parts)):
         raise ValueError("The selected host folder is excluded by the indexing policy")
     files = {}
+    checked = 0
 
     def unreadable(error):
         raise RuntimeError(f"Could not read host folder {error.filename}: {error.strerror}") from error
@@ -109,7 +110,10 @@ def inventory(root, policy, host_mount=None):
         dirs[:] = sorted(name for name in dirs if not (current / name).is_symlink() and name.casefold() not in restricted and (relative_dir.parts or name.casefold() not in {x.casefold() for x in policy["exclude_top_level"]}))
         for name in sorted(names):
             path = current / name
+            checked += 1
             if path.is_symlink():
+                if progress:
+                    progress(checked)
                 continue
             relative = path.relative_to(folder).as_posix()
             try:
@@ -118,19 +122,45 @@ def inventory(root, policy, host_mount=None):
                     files[relative] = {"size": size, "sha256": file_hash(path)}
             except (OSError, ValueError) as error:
                 raise RuntimeError(f"Could not read {path}: {error}") from error
+            if progress:
+                progress(checked)
+    if progress:
+        progress(checked, force=True)
     return folder, files
 
 
 def sync(base, token, task, host_mount=None):
-    folder, files = inventory(task["host_root"], task["policy"], host_mount)
+    last_report = 0
+    last_phase = None
+    checked = 0
+
+    def report(phase, completed=0, total=0, force=False):
+        nonlocal last_report, last_phase
+        now = time.monotonic()
+        if force or phase != last_phase or now - last_report >= 1:
+            request(base, token, "/api/agent/progress", {"revision": task["revision"], "sync_request": task["sync_request"], "phase": phase, "checked": checked, "completed": completed, "total": total})
+            last_report = now
+            last_phase = phase
+
+    def scanned(count, force=False):
+        nonlocal checked
+        checked = count
+        report("scanning", force=force)
+
+    report("scanning")
+    folder, files = inventory(task["host_root"], task["policy"], host_mount, scanned)
+    report("planning")
     body = {"revision": task["revision"], "sync_request": task["sync_request"], "files": files}
-    missing = request(base, token, "/api/agent/plan", body)["missing"]
-    for name in missing:
+    missing = request(base, token, "/api/agent/plan", body, timeout=1800)["missing"]
+    report("transferring", total=len(missing))
+    for completed, name in enumerate(missing, 1):
         document = folder.joinpath(*name.split("/"))
         if document.is_symlink() or not document.resolve().is_relative_to(folder):
             raise ValueError("Document changed to a symlink during sync")
         send_file(base, token, task["revision"], name, document, files[name])
-    result = request(base, token, "/api/agent/commit", body)
+        report("transferring", completed=completed, total=len(missing), force=completed == len(missing))
+    report("finalizing")
+    result = request(base, token, "/api/agent/commit", body, timeout=1800)
     LOG.info("Synced %s documents (%s transferred)", result["synced"], len(missing))
 
 
@@ -210,7 +240,7 @@ def run(config_path, once=False, scan_seconds=300, host_mount=None):
             LOG.exception("Host sync failed; retrying")
             if task and task.get("source_mode") == "host_agent":
                 try:
-                    request(base, token, "/api/agent/error", {"revision": task["revision"], "error": str(error)})
+                    request(base, token, "/api/agent/error", {"revision": task["revision"], "sync_request": task["sync_request"], "error": str(error)})
                 except Exception:
                     pass
             if once:

@@ -16,10 +16,10 @@ function dashboard(config, connected = false) {
       toggle(name, force) { if (force ?? !this.classes.has(name)) this.classes.add(name); else this.classes.delete(name); },
       remove(name) { this.classes.delete(name); }, add(name) { this.classes.add(name); },
       contains(name) { return this.classes.has(name); }
-    }, replaceChildren() {}, scrollTo() {}
+    }, replaceChildren() {}, scrollTo() {}, removeAttribute(name) { if (name === 'value') this.value = undefined; }
   }]));
   const calls = [];
-  const status = {config: {...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected, agent_managed: true,
+  const status = {config: {sync_request: 0, ...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected, agent_managed: true,
     source_ready: connected || config.source_mode === 'container', agent_file_count: 2, agent_sync_request_completed: 1};
   const context = vm.createContext({
     document: {getElementById: id => elements[id] || null, querySelectorAll: () => [],
@@ -71,14 +71,44 @@ test('Next keeps setup on the folder step and explains a missing host service im
 });
 
 test('Next verifies the selected host folder before advancing to indexing policy', async () => {
-  const {elements, calls, context} = dashboard(legacy, true);
+  const {elements, calls, context, status} = dashboard(legacy, true);
+  status.source_ready = false;
+  status.agent_sync_request_completed = -1;
+  let polls = 0;
+  context.setTimeout = (resolve, delay) => {
+    if (delay === 2000) {
+      polls += 1;
+      status.source_ready = true;
+      status.agent_sync_request_completed = 0;
+      resolve();
+    }
+  };
   elements['setup-source-root'].value = '/mnt/documents';
   await vm.runInContext('saveSource(true, true)', context);
   const sync = calls.findIndex(x => x.route === '/api/agent/refresh');
   const advance = calls.findIndex(x => x.route === '/api/onboarding/progress');
-  assert.ok(sync >= 0 && advance > sync);
+  assert.equal(sync, -1);
+  assert.equal(polls, 1);
+  assert.ok(advance >= 0);
   assert.equal(calls[advance].body.step, 3);
   assert.match(elements['setup-source-status'].textContent, /Folder ready.*2 eligible documents/);
+});
+
+test('section 3 shows scan and transfer progress from the host agent', async () => {
+  const {elements, context, status} = dashboard({...legacy, source_mode: 'host_agent', host_root: '/mnt/documents'}, true);
+  status.source_ready = false;
+  status.agent_progress = {phase: 'scanning', checked: 12, completed: 0, total: 0};
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['setup-source-status'].textContent, /Scanning host folder: 12 files checked/);
+  assert.equal(elements['setup-sync-progress'].classList.contains('hidden'), false);
+  status.agent_progress = {phase: 'transferring', checked: 20, completed: 2, total: 4};
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['setup-source-status'].textContent, /2 of 4/);
+  assert.equal(elements['setup-sync-progress'].value, 50);
+  status.source_ready = true;
+  status.agent_progress = null;
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['setup-sync-progress'].classList.contains('hidden'), true);
 });
 
 test('changing access preference preserves the document path being edited', () => {

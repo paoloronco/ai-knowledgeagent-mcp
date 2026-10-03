@@ -68,13 +68,30 @@ function fillSourceInputs() {
 }
 function renderSourceStatus(s) {
   let text;
+  const progress = $('setup-sync-progress');
+  let showProgress = false;
   if (s.config.source_mode === 'host_agent') {
     const root = s.config.host_root;
-    text = !root ? 'Enter the absolute path of a folder on the Docker host.' : s.agent_error ? 'Folder unavailable: ' + s.agent_error : !s.agent_connected ? 'Folder saved: ' + root + (s.agent_managed ? ' · Automatic host agent is starting or unavailable. Check its Docker service.' : ' · Host folder access is not configured for this installation.') : s.agent_syncing ? 'Checking and syncing ' + root + '…' : s.source_ready ? 'Folder ready: ' + root + ' · ' + s.agent_file_count + ' eligible documents' : 'Waiting for the host service to check ' + root + '…';
+    const phase = s.agent_progress?.phase;
+    if (!root) text = 'Enter the absolute path of a folder on the Docker host.';
+    else if (s.agent_error) text = 'Folder unavailable: ' + s.agent_error;
+    else if (!s.agent_connected) text = 'Folder saved: ' + root + (s.agent_managed ? ' · Automatic host agent is starting or unavailable. Check its Docker service.' : ' · Host folder access is not configured for this installation.');
+    else if (s.source_ready) text = 'Folder ready: ' + root + ' · ' + s.agent_file_count + ' eligible documents';
+    else {
+      showProgress = true;
+      if (phase === 'scanning') text = 'Scanning host folder: ' + s.agent_progress.checked + ' files checked…';
+      else if (phase === 'planning') text = 'Comparing eligible documents with the synchronized copy…';
+      else if (phase === 'transferring') text = 'Transferring changed documents: ' + s.agent_progress.completed + ' of ' + s.agent_progress.total + '…';
+      else if (phase === 'finalizing') text = 'Finalizing host folder sync…';
+      else text = 'Waiting for the host agent to scan ' + root + '…';
+    }
   } else {
     text = (s.source_ready ? 'Folder available to the container: ' : 'Folder unavailable: ') + s.config.source_root;
   }
   $('setup-source-status').textContent = text; $('dashboard-source-status').textContent = text;
+  progress.classList.toggle('hidden', !showProgress);
+  if (showProgress && s.agent_progress?.phase === 'transferring' && s.agent_progress.total > 0) progress.value = 100 * s.agent_progress.completed / s.agent_progress.total;
+  else progress.removeAttribute('value');
 }
 async function syncNow() {
   try { await api('/api/agent/refresh', {}); message('Host sync requested. The agent will scan the folder shortly.'); }
@@ -114,7 +131,7 @@ async function saveSource(advance = false, fromWizard = false) {
     const result = await api('/api/config', {document_root: sourceRoot, source_selection: selection, folders: [''], interval_hours: interval});
     current.config = result; current.source_root = result.source_root;
     fillSourceInputs(); await refresh();
-    if (advance) { await waitForFreshHostSync(); await nextStep(); }
+    if (advance) { await waitForFreshHostSync(false); await nextStep(); }
     else message('Document root saved.');
   } catch (e) { message(e.message, true); }
 }
@@ -156,21 +173,23 @@ async function savePolicy(advance) {
 }
 async function saveYaml() { try { await api('/api/policy', {content: $('policy-yaml').value}); await loadPolicy(); message('YAML saved.'); } catch (e) { message(e.message, true); } }
 async function service(name, action) { try { await api('/api/service', {name, action}); message(`${name}: ${action} requested.`); await refresh(); } catch (e) { message(e.message, true); } }
-async function waitForFreshHostSync() {
+async function waitForFreshHostSync(requestFresh = true) {
   const before = await api('/api/status');
   if (before.config.source_mode !== 'host_agent') return;
   if (!before.agent_connected) throw Error(before.agent_managed ? 'Automatic host agent is unavailable. Check the host-agent Docker service.' : 'Host folder access is not configured for this installation.');
-  const request = await api('/api/agent/refresh', {});
-  message('Syncing the host folder before indexing…');
-  const deadline = Date.now() + 15 * 60 * 1000;
+  const requestId = requestFresh ? (await api('/api/agent/refresh', {})).sync_request : before.config.sync_request;
+  if (!requestFresh && before.source_ready && before.agent_sync_request_completed >= requestId) return;
+  const deadline = Date.now() + 60 * 60 * 1000;
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     const status = await api('/api/status');
+    renderSourceStatus(status);
     if (status.agent_error) throw Error('Host sync failed: ' + status.agent_error);
     if (status.config.source_mode !== 'host_agent' || status.config.sync_revision !== before.config.sync_revision) throw Error('Document source changed during sync');
-    if (status.source_ready && status.agent_sync_request_completed >= request.sync_request) return;
+    if (!status.agent_connected) throw Error('Host agent disconnected during sync. Check its Docker service.');
+    if (status.source_ready && status.agent_sync_request_completed >= requestId) return;
   }
-  throw Error('Host sync did not finish. Check the agent status and log.');
+  throw Error('Host sync did not finish within one hour. Check the agent status and log.');
 }
 async function runIndex(dry_run) {
   try { await waitForFreshHostSync(); await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }

@@ -175,6 +175,7 @@ class Controller:
         self.agent_seen_at = 0
         self.agent_error_text = ""
         self.sync_in_progress = False
+        self.agent_progress = None
         self.agent_manifest = json.loads(AGENT_MANIFEST.read_text(encoding="utf-8")) if AGENT_MANIFEST.exists() else {"revision": -1, "files": {}}
         self.stopping = False
         self.qdrant = None
@@ -254,6 +255,7 @@ class Controller:
             if AUTO_AGENT_CONFIG is not None:
                 self.save_auto_agent(token)
             self.agent_seen_at = 0
+            self.agent_progress = None
         return {"token": token}
 
     def save_auto_agent(self, token):
@@ -295,14 +297,33 @@ class Controller:
                 raise ValueError("Select a host folder first")
             self.config["sync_request"] += 1
             self.agent_error_text = ""
+            self.agent_progress = None
             self._save()
             return {"requested": True, "sync_request": self.config["sync_request"]}
 
+    def report_agent_progress(self, values):
+        phase = values.get("phase")
+        checked = values.get("checked")
+        completed = values.get("completed")
+        total = values.get("total")
+        if phase not in ("scanning", "planning", "transferring", "finalizing") or any(type(value) is not int or value < 0 for value in (checked, completed, total)) or completed > total:
+            raise ValueError("Invalid host sync progress")
+        with self.lock:
+            if values.get("revision") != self.config["sync_revision"] or values.get("sync_request") != self.config["sync_request"] or self.config["source_mode"] != "host_agent":
+                return {"accepted": False}
+            if phase == "scanning" and checked == 0:
+                self.agent_error_text = ""
+            self.agent_progress = {"phase": phase, "checked": checked, "completed": completed, "total": total}
+            self.agent_seen_at = time.time()
+            self.sync_in_progress = True
+            return {"accepted": True}
+
     def agent_error(self, values):
         with self.lock:
-            if values.get("revision") == self.config["sync_revision"]:
+            if values.get("revision") == self.config["sync_revision"] and values.get("sync_request", self.config["sync_request"]) == self.config["sync_request"]:
                 self.agent_error_text = str(values.get("error", "Host sync failed"))[:512]
                 self.sync_in_progress = False
+                self.agent_progress = None
             return {"recorded": True}
 
     def agent_plan(self, values):
@@ -392,6 +413,8 @@ class Controller:
             self.agent_manifest = {"revision": revision, "sync_request": request_id, "files": files, "synced_at": synced_at}
             self.sync_in_progress = False
             self.agent_error_text = ""
+            if request_id == self.config["sync_request"]:
+                self.agent_progress = None
             return {"synced": len(files)}
 
     def _start_qdrant(self):
@@ -497,6 +520,7 @@ class Controller:
                 self.config["sync_revision"] += 1
                 self.sync_in_progress = False
                 self.agent_error_text = ""
+                self.agent_progress = None
             if root_changed:
                 self.invalidate_result()
                 if not self.config["onboarding_complete"]:
@@ -613,8 +637,9 @@ class Controller:
                 "agent_connected": time.time() - self.agent_seen_at < 60,
                 "agent_paired": AGENT_AUTH.exists(),
                 "agent_managed": AUTO_AGENT_CONFIG is not None,
-                "agent_synced": self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress,
+                "agent_synced": self.agent_manifest.get("revision") == self.config["sync_revision"] and self.agent_manifest.get("sync_request", -1) >= self.config["sync_request"] and not self.sync_in_progress,
                 "agent_syncing": self.sync_in_progress,
+                "agent_progress": self.agent_progress,
                 "agent_error": self.agent_error_text,
                 "agent_last_sync_at": self.agent_manifest.get("synced_at"),
                 "agent_file_count": len(self.agent_manifest.get("files", {})) if self.agent_manifest.get("revision") == self.config["sync_revision"] else 0,
@@ -626,7 +651,7 @@ class Controller:
             }
 
     def host_source_ready(self):
-        return bool(self.config["host_root"] and self.agent_manifest.get("revision") == self.config["sync_revision"] and not self.sync_in_progress and not self.agent_error_text and time.time() - self.agent_seen_at < 60)
+        return bool(self.config["host_root"] and self.agent_manifest.get("revision") == self.config["sync_revision"] and self.agent_manifest.get("sync_request", -1) >= self.config["sync_request"] and not self.sync_in_progress and not self.agent_error_text and time.time() - self.agent_seen_at < 60)
 
     def close(self):
         with self.lock:
@@ -782,6 +807,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = controller.agent_plan(values)
                 elif route.path == "/api/agent/commit":
                     result = controller.agent_commit(values)
+                elif route.path == "/api/agent/progress":
+                    result = controller.report_agent_progress(values)
                 elif route.path == "/api/agent/error":
                     result = controller.agent_error(values)
                 else:
@@ -853,6 +880,7 @@ class Handler(BaseHTTPRequestHandler):
                     if controller.config["source_mode"] == "host_agent":
                         controller.config["sync_revision"] += 1
                         controller.sync_in_progress = False
+                        controller.agent_progress = None
                         controller._save()
                 result = {"saved": True}
             else:

@@ -419,7 +419,9 @@ class AdminBoundaryTest(unittest.TestCase):
                     try:
                         url = f"http://127.0.0.1:{server.server_port}"
                         task = host_agent.request(url, token, "/api/agent/task")
-                        host_agent.sync(url, token, task)
+                        with patch.object(controller, "report_agent_progress", wraps=controller.report_agent_progress) as progress:
+                            host_agent.sync(url, token, task)
+                        self.assertEqual([call.args[0]["phase"] for call in progress.call_args_list], ["scanning", "scanning", "planning", "transferring", "transferring", "finalizing"])
                         self.assertEqual((host_mirror / "notes" / "first.md").read_text(), "first version")
                         self.assertFalse((host_mirror / "secrets" / "private.md").exists())
                         self.assertTrue(controller.status()["source_ready"])
@@ -450,8 +452,11 @@ class AdminBoundaryTest(unittest.TestCase):
                         self.assertTrue(controller.status()["source_ready"])
                         refresh_id = controller.request_agent_sync()["sync_request"]
                         self.assertLess(controller.status()["agent_sync_request_completed"], refresh_id)
+                        self.assertFalse(controller.status()["source_ready"])
+                        self.assertFalse(controller.report_agent_progress({"revision": controller.config["sync_revision"], "sync_request": refresh_id - 1, "phase": "scanning", "checked": 1, "completed": 0, "total": 0})["accepted"])
                         host_agent.sync(url, token, host_agent.request(url, token, "/api/agent/task"))
                         self.assertEqual(controller.status()["agent_sync_request_completed"], refresh_id)
+                        self.assertTrue(controller.status()["source_ready"])
                         bad = urllib.request.Request(url + "/api/agent/plan", data=b"{}", headers={"X-Agent-Token": "wrong"})
                         with self.assertRaises(urllib.error.HTTPError) as denied:
                             urllib.request.urlopen(bad)
