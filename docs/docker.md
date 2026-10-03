@@ -48,11 +48,11 @@ services:
           create_host_path: false
 ```
 
-Replace `source` with an existing absolute host path, then run `docker compose up -d`. Choose **Folder already mounted inside the container** and enter `/knowledge` as the document root; you can select the whole mount or several subfolders within it. On Windows, use a host source such as `C:/Users/Name/Documents`. A bind mount still requires a container recreation when changed.
+Replace `source` with an existing absolute host path, then run `docker compose up -d`. Open **Document access settings**, choose **Folder already mounted inside the container**, and enter `/knowledge` as the **Document root path**. Click **+**, or **Next** during onboarding, to save the entire root. On Windows, use a host source such as `C:/Users/Name/Documents`. A bind mount still requires a container recreation when changed.
 
 To select folders from different host locations, mount each one under a separate subdirectory of the same container root (for example `/knowledge/team-a` and `/knowledge/team-b`), then select `/knowledge` as the document root in the dashboard.
 
-The dashboard health check is also available at `/api/health` on port 8080 and returns an error while Qdrant is unavailable. The image uses it for its Docker health status. Scheduled indexing rescans selected folders and skips parsing and embedding files already recorded unchanged in the persistent ingestion state.
+The dashboard health check is also available at `/api/health` on port 8080 and returns an error while Qdrant is unavailable. The image uses it for its Docker health status. Scheduled indexing rescans the document root and skips parsing and embedding files already recorded unchanged in the persistent ingestion state.
 
 ## Upgrade from the older two-container Compose stack
 
