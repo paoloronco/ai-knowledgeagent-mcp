@@ -4,6 +4,7 @@ import re
 from pathlib import PurePosixPath
 
 from qdrant_client import QdrantClient
+from policy_defaults import REQUIRED_DIRECTORY_NAMES
 
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
@@ -106,11 +107,7 @@ HISTORICAL_MARKERS = (
 
 # Material that should not normally participate in the personal
 # technical knowledge agent.
-RESTRICTED_MARKERS = (
-    "/sample-folder/",
-    "/sample-folder/",
-    "/sample-folder/",
-)
+RESTRICTED_MARKERS = tuple(f"/{name}/" for name in sorted(REQUIRED_DIRECTORY_NAMES))
 
 
 CURRENT_QUERY_HINTS = (

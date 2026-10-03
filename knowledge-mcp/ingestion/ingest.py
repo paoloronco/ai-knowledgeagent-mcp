@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,9 @@ import yaml
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_DIR / "mcp"))
+from policy_defaults import REQUIRED_DIRECTORY_NAMES, REQUIRED_TOP_LEVEL_NAMES, ensure_required_exclusions
+
 load_dotenv(PROJECT_DIR / ".env")
 
 BASE_DIR = Path(os.getenv("INGESTION_BASE_DIR", str(PROJECT_DIR / ".state")))
@@ -41,6 +45,7 @@ EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
 def load_policy():
     with POLICY_FILE.open("r", encoding="utf-8") as f:
         policy = yaml.safe_load(f)
+    ensure_required_exclusions(policy)
     root = os.getenv("KNOWLEDGE_ROOT") or policy.get("knowledge_root")
     if not root or root.startswith("${") or root == "/path/to/knowledge/root":
         raise ValueError("Set KNOWLEDGE_ROOT in .env or knowledge_root in index-policy.yaml")
@@ -100,13 +105,13 @@ def is_candidate(path, root, policy):
 
     # Top-level exclusions
     if relative.parts:
-        excluded_top = {name.casefold() for name in policy.get("exclude_top_level", [])}
+        excluded_top = {name.casefold() for name in policy.get("exclude_top_level", [])} | REQUIRED_TOP_LEVEL_NAMES
 
         if relative.parts[0].casefold() in excluded_top:
             return False
 
     # Directory exclusions
-    excluded_dirs = {name.casefold() for name in policy.get("exclude_directories", [])}
+    excluded_dirs = {name.casefold() for name in policy.get("exclude_directories", [])} | REQUIRED_DIRECTORY_NAMES
 
     if any(part.casefold() in excluded_dirs for part in relative.parts[:-1]):
         return False

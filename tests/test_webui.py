@@ -18,6 +18,24 @@ import host_agent
 
 
 class AdminBoundaryTest(unittest.TestCase):
+    def test_saved_policy_recovers_required_directory_exclusions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            policy_file = data / "index-policy.yaml"
+            old_policy = app.DEFAULT_POLICY.read_text(encoding="utf-8")
+            for name in ("coverage", "cache", ".cache", "vendor", ".stversions", "sample-folder", "sample-folder", "sample-folder", "sample-folder"):
+                old_policy = old_policy.replace(f"  - {name}\n", "")
+            policy_file.write_text(old_policy, encoding="utf-8")
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", data / "documents"),
+                patch.object(app, "MANAGED_SOURCE", data / "documents"), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", policy_file),
+                patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+            ):
+                controller = app.Controller()
+                app.validate_policy(policy_file.read_text(encoding="utf-8"))
+                controller.close()
+
     def test_setup_progress_is_persisted_and_requires_successful_initial_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "data"

@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import yaml
 from host_sync import allowed_file, host_root, relative_path
+from policy_defaults import ensure_required_exclusions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -139,6 +140,11 @@ class Controller:
             SOURCE.mkdir(parents=True, exist_ok=True)
         if not POLICY.exists():
             shutil.copyfile(DEFAULT_POLICY, POLICY)
+        saved_policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+        if ensure_required_exclusions(saved_policy):
+            tmp = POLICY.with_suffix(".tmp")
+            tmp.write_text(yaml.safe_dump(saved_policy, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            tmp.replace(POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
         self.config = {"source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "setup_step": 0 if first_start else 6}

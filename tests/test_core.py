@@ -33,6 +33,27 @@ class FakeModel:
 
 
 class CoreFlowTest(unittest.TestCase):
+    def test_sensitive_directories_remain_excluded_with_an_older_policy(self):
+        names = ("coverage", "cache", ".cache", "vendor", ".stversions", "sample-folder", "sample-folder", "sample-folder", "sample-folder")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "documents"
+            root.mkdir()
+            old_policy = (ROOT / "mcp" / "index-policy.yaml").read_text(encoding="utf-8")
+            for name in names:
+                old_policy = old_policy.replace(f"  - {name}\n", "")
+            policy_file = Path(tmp) / "old-policy.yaml"
+            policy_file.write_text(old_policy, encoding="utf-8")
+            with patch.object(ingest, "POLICY_FILE", policy_file), patch.dict(os.environ, {"KNOWLEDGE_ROOT": str(root)}):
+                policy = ingest.load_policy()
+            self.assertTrue({name.casefold() for name in names} <= {name.casefold() for name in policy["exclude_directories"]})
+            for name in names:
+                folder = root / "notes" / name.upper()
+                folder.mkdir(parents=True, exist_ok=True)
+                document = folder / "private.md"
+                document.write_text("Sensitive", encoding="utf-8")
+                self.assertFalse(ingest.is_candidate(document, root, policy), name)
+                self.assertFalse(retrieval.eligible_for_query(document.relative_to(root).as_posix(), "current"), name)
+
     def test_selected_folders_and_file_exclusions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -22,6 +22,7 @@ exclude_directories:
   - __pycache__
   - dist
   - build
+  # Always excluded, including in policies saved by older releases.
   - coverage
   - cache
   - .cache
