@@ -297,12 +297,34 @@ function renderEmbeddingModels(s) {
       button.setAttribute('aria-pressed', String(selected === id));
       button.disabled = s.index_running;
       button.onclick = () => selectEmbeddingModel(id);
+      const header = document.createElement('div'); header.className = 'model-option-header';
       const title = document.createElement('strong');
-      title.textContent = spec.name + (id === 'e5-small' ? ' · Recommended' : '');
-      button.append(title);
-      for (const line of [spec.use_case, `${spec.resources} resources · ${spec.speed} · ${spec.dimensions} dimensions`, spec.note]) {
-        const detail = document.createElement('span'); detail.textContent = line; button.append(detail);
+      title.textContent = spec.name;
+      const tags = document.createElement('div'); tags.className = 'model-option-tags';
+      if (id === 'e5-small') {
+        const recommended = document.createElement('span'); recommended.className = 'model-tag recommended';
+        recommended.textContent = 'Recommended'; tags.append(recommended);
       }
+      if (selected === id) {
+        const chosen = document.createElement('span'); chosen.className = 'model-tag chosen';
+        chosen.textContent = 'Selected'; tags.append(chosen);
+      }
+      header.append(title, tags);
+      const useCase = document.createElement('p'); useCase.className = 'model-use-case'; useCase.textContent = spec.use_case;
+      const metrics = document.createElement('div'); metrics.className = 'model-metrics';
+      for (const [icon, label, value] of [
+        ['⚡', 'CPU speed', spec.speed], ['▥', 'Memory', spec.resources],
+        ['◈', 'Vector size', `${spec.dimensions} dims`], ['▣', 'Runs on', 'CPU / GPU']
+      ]) {
+        const metric = document.createElement('div'); metric.className = 'model-metric';
+        const symbol = document.createElement('span'); symbol.className = 'model-metric-icon'; symbol.textContent = icon; symbol.setAttribute('aria-hidden', 'true');
+        const copy = document.createElement('span'); copy.className = 'model-metric-copy';
+        const caption = document.createElement('span'); caption.className = 'model-metric-label'; caption.textContent = label;
+        const amount = document.createElement('strong'); amount.className = 'model-metric-value'; amount.textContent = value;
+        copy.append(caption, amount); metric.append(symbol, copy); metrics.append(metric);
+      }
+      const note = document.createElement('p'); note.className = 'model-option-note'; note.textContent = spec.note;
+      button.append(header, useCase, metrics, note);
       const source = document.createElement('a');
       source.href = spec.url; source.target = '_blank'; source.rel = 'noopener noreferrer';
       source.textContent = 'Official model card';

@@ -81,7 +81,13 @@ test('model choice shows hardware guidance and keeps active search until indexin
   };
   await vm.runInContext('refresh()', context);
   assert.equal(elements['dashboard-model-options'].children.length, 2);
-  assert.match(elements['dashboard-model-options'].children[1].children[0].children[2].textContent, /1024 dimensions/);
+  const model = elements['dashboard-model-options'].children[1].children[0];
+  assert.match(visibleText(model), /CPU speed Slow/);
+  assert.match(visibleText(model), /Memory High/);
+  assert.match(visibleText(model), /Vector size 1024 dims/);
+  assert.match(visibleText(model), /Runs on CPU \/ GPU/);
+  assert.match(visibleText(elements['dashboard-model-options'].children[0]), /Recommended Selected/);
+  assert.match(html, /\.model-option:disabled\{opacity:1/);
   await elements['dashboard-model-options'].children[1].children[0].onclick();
   assert.deepEqual(calls.find(x => x.route === '/api/embedding-model').body, {model: 'bge-m3'});
   assert.equal(status.config.active_embedding_model, 'e5-small');
