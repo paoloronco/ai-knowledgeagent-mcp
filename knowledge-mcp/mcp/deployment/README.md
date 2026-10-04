@@ -18,7 +18,7 @@ Pin and test a specific Qdrant image version for your deployment before producti
 
 ## Application
 
-Clone the repository under /opt/ai-knowledgeagent-mcp and create a dedicated service account with read access to the document mount. From /opt/ai-knowledgeagent-mcp/knowledge-mcp:
+Clone [paoloronco/knowledge-mcp](https://github.com/paoloronco/knowledge-mcp) under /opt/knowledge-mcp and create a dedicated service account with read access to the document mount. From /opt/knowledge-mcp/knowledge-mcp:
 
 ~~~bash
 python3 -m venv .venv
@@ -47,8 +47,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=mcp
-WorkingDirectory=/opt/ai-knowledgeagent-mcp/knowledge-mcp
-ExecStart=/opt/ai-knowledgeagent-mcp/knowledge-mcp/.venv/bin/python mcp/server.py
+WorkingDirectory=/opt/knowledge-mcp/knowledge-mcp
+ExecStart=/opt/knowledge-mcp/knowledge-mcp/.venv/bin/python mcp/server.py
 Restart=on-failure
 RestartSec=5
 
