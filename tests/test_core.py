@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from qdrant_client import QdrantClient
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1] / "knowledge-mcp"
 sys.path.insert(0, str(ROOT / "ingestion"))
@@ -33,6 +34,71 @@ class FakeModel:
 
 
 class CoreFlowTest(unittest.TestCase):
+    def test_partial_index_can_retry_after_ignoring_bad_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "documents"
+            root.mkdir()
+            (root / "good.md").write_text("A valid synthetic document about the observatory. " * 4, encoding="utf-8")
+            (root / "bad.docx").write_bytes(b"This is not a DOCX package")
+            policy_file = base / "policy.yaml"
+            policy_file.write_text((ROOT / "mcp" / "index-policy.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+            state_file = base / "state.json"
+            errors_file = base / "run-errors.jsonl"
+            stages_file = base / "stages.log"
+            client = QdrantClient(":memory:")
+            fake_transformers = types.SimpleNamespace(SentenceTransformer=FakeModel)
+            with (
+                patch.dict(os.environ, {"KNOWLEDGE_ROOT": str(root)}),
+                patch.dict(sys.modules, {"sentence_transformers": fake_transformers}),
+                patch.object(ingest, "QdrantClient", return_value=client),
+                patch.object(ingest, "embedding_device", return_value="cpu"),
+                patch.object(ingest, "POLICY_FILE", policy_file),
+                patch.object(ingest, "STATE_FILE", state_file),
+                patch.object(ingest, "ERROR_LOG", base / "errors.log"),
+                patch.object(ingest, "RUN_ERRORS_FILE", errors_file),
+                patch.object(ingest, "STAGES_FILE", stages_file),
+                patch.object(ingest, "PROGRESS_FILE", base / "progress.json"),
+                patch.object(sys, "argv", ["ingest.py"]),
+            ):
+                with self.assertRaises(SystemExit):
+                    ingest.main()
+                self.assertEqual(client.count(ingest.COLLECTION_NAME).count, 1)
+                self.assertEqual(len(json.loads(state_file.read_text())["documents"]), 1)
+                self.assertEqual(json.loads(errors_file.read_text())["source"], "bad.docx")
+                self.assertIn("failed", stages_file.read_text())
+
+                policy = yaml.safe_load(policy_file.read_text(encoding="utf-8"))
+                policy["exclude_files"] = ["bad.docx"]
+                policy_file.write_text(yaml.safe_dump(policy), encoding="utf-8")
+                errors_file.write_text("", encoding="utf-8")
+                ingest.main()
+                self.assertEqual(client.count(ingest.COLLECTION_NAME).count, 1)
+                self.assertEqual(len(json.loads(state_file.read_text())["documents"]), 1)
+                self.assertEqual(errors_file.read_text(), "")
+                self.assertIn("complete", stages_file.read_text())
+
+    def test_index_event_files_record_progress_and_relative_document_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "documents"
+            root.mkdir()
+            source = root / "~$draft.docx"
+            with (
+                patch.object(ingest, "PROGRESS_FILE", base / "progress.json"),
+                patch.object(ingest, "STAGES_FILE", base / "stages.log"),
+                patch.object(ingest, "RUN_ERRORS_FILE", base / "run-errors.jsonl"),
+                patch.object(ingest, "ERROR_LOG", base / "errors.log"),
+                patch.dict(os.environ, {"KNOWLEDGE_ROOT": str(root)}),
+            ):
+                ingest.write_progress("indexing", 3, 10, force=True)
+                ingest.log_error(source, ValueError("Not a valid document"), "indexing")
+            self.assertEqual(json.loads((base / "progress.json").read_text())["completed"], 3)
+            self.assertIn("indexing\t3/10", (base / "stages.log").read_text())
+            event = json.loads((base / "run-errors.jsonl").read_text())
+            self.assertEqual(event["source"], "~$draft.docx")
+            self.assertEqual(event["error_type"], "ValueError")
+
     def test_default_directories_remain_excluded_with_an_older_policy(self):
         names = ("coverage", "cache", ".cache", "vendor", ".stversions")
         with tempfile.TemporaryDirectory() as tmp:

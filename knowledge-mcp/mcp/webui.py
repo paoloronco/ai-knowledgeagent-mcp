@@ -303,9 +303,10 @@ class Controller:
         with self.lock:
             self.last_result = None
             (DATA / "last-result.json").unlink(missing_ok=True)
+            (DATA / "index-progress.json").unlink(missing_ok=True)
 
     def _env(self, model_id=None, indexing=False):
-        env = {**os.environ, "KNOWLEDGE_ROOT": self.config["source_root"], "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY), "INGEST_PROGRESS_FILE": str(DATA / "index-progress.json")}
+        env = {**os.environ, "KNOWLEDGE_ROOT": self.config["source_root"], "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY), "INGEST_PROGRESS_FILE": str(DATA / "index-progress.json"), "INGEST_STAGES_FILE": str(DATA / "index-stages.log"), "INGEST_RUN_ERRORS_FILE": str(DATA / "index-errors.jsonl")}
         chosen = model_id or self.config["active_embedding_model"] or self.config["embedding_model"]
         if chosen in MODELS:
             spec = MODELS[chosen]
@@ -776,7 +777,8 @@ class Controller:
             selected_root = validate_source_root(self.config["source_root"])
             normalize_folders(self.config["folders"], selected_root)
             self.invalidate_result()
-            (DATA / "index-progress.json").unlink(missing_ok=True)
+            (DATA / "index-stages.log").write_text("", encoding="utf-8")
+            (DATA / "index-errors.jsonl").write_text("", encoding="utf-8")
             args = [sys.executable, "ingestion/ingest.py"]
             if dry_run:
                 args += ["--dry-run", "--limit", "10"]
@@ -844,6 +846,50 @@ class Controller:
                 except (OSError, ValueError):
                     pass
 
+    def index_errors(self):
+        run_file = DATA / "index-errors.jsonl"
+        if run_file.exists():
+            entries = []
+            for line in run_file.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                    if isinstance(event, dict) and isinstance(event.get("source"), str):
+                        entries.append(event)
+                except ValueError:
+                    continue
+            origin = "current"
+        elif (DATA / "ingest.log").exists():
+            # An older image kept only a model-specific, append-only errors.log.
+            base = Path(os.getenv("INGESTION_BASE_DIR", str(ROOT / ".state")))
+            candidates = [base / "logs" / "errors.log", *(base / "models").glob("*/logs/errors.log")]
+            existing = [path for path in candidates if path.is_file()]
+            entries = []
+            if existing:
+                latest = max(existing, key=lambda path: path.stat().st_mtime)
+                for line in latest.read_text(encoding="utf-8", errors="replace").splitlines()[-100:]:
+                    parts = line.split("\t", 2)
+                    if len(parts) != 3:
+                        continue
+                    timestamp, path, detail = parts
+                    try:
+                        source = Path(path).resolve().relative_to(Path(self.config["source_root"]).resolve()).as_posix()
+                    except ValueError:
+                        source = path
+                    entries.append({"at": timestamp, "stage": "indexing", "source": source, "error_type": detail.split("(", 1)[0], "message": detail})
+            origin = "legacy"
+        else:
+            entries, origin = [], "none"
+        excluded = {name.casefold() for name in yaml.safe_load(POLICY.read_text(encoding="utf-8")).get("exclude_files", [])}
+        for entry in entries:
+            entry["auto_excluded"] = is_office_lock_file(entry["source"].rsplit("/", 1)[-1])
+            try:
+                relative_path(entry["source"])
+                entry["can_ignore"] = not entry["auto_excluded"]
+            except (KeyError, ValueError):
+                entry["can_ignore"] = False
+            entry["ignored"] = entry["source"].casefold() in excluded
+        return entries, origin
+
     def status(self):
         try:
             with urllib.request.urlopen(os.getenv("QDRANT_URL", "http://127.0.0.1:6333").rstrip("/") + "/readyz", timeout=2) as response:
@@ -890,6 +936,7 @@ class Controller:
                     output.seek(0, 2)
                     output.seek(max(0, output.tell() - 12000))
                     tail = output.read().decode("utf-8", errors="replace")
+            index_errors, error_origin = self.index_errors()
             return {
                 "config": dict(self.config),
                 "embedding_models": MODELS,
@@ -923,6 +970,11 @@ class Controller:
                 "source_root": self.config["source_root"],
                 "last_result": self.last_result,
                 "index_progress": index_progress,
+                "index_errors": index_errors[:25],
+                "index_error_count": len(index_errors),
+                "index_error_origin": error_origin,
+                "index_log_available": log.is_file(),
+                "index_stages_available": (DATA / "index-stages.log").is_file(),
                 "next_run_at": self.config["last_run_at"] + self.config["interval_hours"] * 3600 if self.config["interval_hours"] else None,
                 "log": tail,
             }
@@ -982,6 +1034,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def send_download(self, path, filename):
+        if not path.is_file() or path.is_symlink():
+            self.send(404, json.dumps({"error": "This log is not available for the selected run"}))
+            return
+        with path.open("rb") as source:
+            size = os.fstat(source.fileno()).st_size
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            remaining = size
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
     def do_GET(self):
         if not self._allowed_host():
             self.send(403, json.dumps({"error": "Host not allowed"}))
@@ -1017,6 +1090,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/status":
             self.send(200, json.dumps(controller.status()))
+        elif self.path == "/api/index/errors":
+            entries, origin = controller.index_errors()
+            self.send(200, json.dumps({"errors": entries, "origin": origin}))
+        elif self.path == "/api/index/log/full":
+            self.send_download(DATA / "ingest.log", "indexing-full.log")
+        elif self.path == "/api/index/log/stages":
+            self.send_download(DATA / "index-stages.log", "indexing-stages.log")
         elif self.path == "/api/scan/files":
             try:
                 self.send(200, json.dumps({"files": controller.scan_files()}))

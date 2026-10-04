@@ -41,7 +41,7 @@ function renderSetupProgress(status) {
     if (index === wizardStep) item.setAttribute('aria-current', 'step');
     else item.removeAttribute('aria-current');
   }
-  if (done === 6 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0) $('wizard-progress').textContent = 'Initial indexing failed · review the log and retry';
+  if (done === 6 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0) $('wizard-progress').textContent = status.index_error_count ? 'Initial indexing finished with document errors · review and retry' : 'Initial indexing failed · review the log and retry';
 }
 function showStep(step, push = true) {
   wizardStep = Math.max(0, Math.min(6, step));
@@ -230,6 +230,53 @@ async function runIndex(dry_run) {
   try { await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
   catch (e) { message(e.message, true); }
 }
+function appendIndexError(list, error, running = false) {
+  const item = document.createElement('li'), source = document.createElement('code'), detail = document.createElement('span');
+  source.textContent = error.source || 'Unknown document';
+  detail.textContent = `${error.stage || 'indexing'} · ${error.error_type || 'Error'}: ${error.message || 'No details recorded'}`;
+  item.append(source, detail);
+  if (error.ignored || error.auto_excluded) {
+    const state = document.createElement('span'); state.textContent = error.auto_excluded ? ' · Automatically excluded in this version; retry indexing' : ' · Ignored in indexing policy'; item.append(state);
+  } else if (error.can_ignore) {
+    const button = document.createElement('button'); button.className = 'secondary'; button.textContent = 'Ignore this file';
+    button.disabled = running;
+    button.onclick = () => ignoreIndexError(error.source); item.append(button);
+  }
+  list.append(item);
+}
+async function ignoreIndexError(source) {
+  try {
+    const result = await api('/api/policy'), next = result.policy;
+    next.exclude_files = [...new Set([...(next.exclude_files || []), source])];
+    await api('/api/policy', {policy: next});
+    await loadPolicy(); await refresh();
+    message('File excluded. Wait for the folder to sync, then run the incremental update.');
+  } catch (e) { message(e.message, true); }
+}
+async function openIndexErrors() {
+  try {
+    const result = await api('/api/index/errors'), list = $('index-errors-all-list');
+    list.replaceChildren();
+    for (const error of result.errors) appendIndexError(list, error, current?.index_running);
+    $('index-errors-dialog').showModal();
+  } catch (e) { message(e.message, true); }
+}
+function renderIndexErrors(s) {
+  const count = s.index_error_count || 0;
+  const failed = !s.index_running && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0;
+  $('index-errors-card').classList.toggle('hidden', !count && !failed);
+  if (count) {
+    const historical = s.index_error_origin === 'legacy' ? ' These entries come from an older error log and may include earlier attempts.' : '';
+    $('index-errors-summary').textContent = `${count} ${count === 1 ? 'document has' : 'documents have'} errors. Successfully indexed documents remain saved.${historical}`;
+  } else if (failed) $('index-errors-summary').textContent = 'Indexing stopped before a document error was recorded. Download the full log for details.';
+  else $('index-errors-summary').textContent = '';
+  const list = $('index-errors-list'); list.replaceChildren();
+  for (const error of s.index_errors || []) appendIndexError(list, error, s.index_running);
+  $('index-errors-all').classList.toggle('hidden', count <= (s.index_errors || []).length);
+  for (const id of ['download-index-full', 'setup-download-full']) $(id).classList.toggle('hidden', !s.index_log_available);
+  for (const id of ['download-index-stages', 'setup-download-stages']) $(id).classList.toggle('hidden', !s.index_stages_available);
+  $('index-stages-note').classList.toggle('hidden', !s.index_log_available || s.index_stages_available);
+}
 async function selectEmbeddingModel(model) {
   try {
     await api('/api/embedding-model', {model});
@@ -312,12 +359,14 @@ function syncRoute(status) {
 function renderIndexProgress(s) {
   const progress = s.config.initial_index_skipped && !s.index_running && s.last_result?.dry_run ? null : s.index_progress, bar = $('index-progress');
   if (!progress) { bar.classList.add('hidden'); $('index-progress-label').textContent = s.index_running ? 'Starting…' : ''; return; }
-  const stages = {discovering: 'Discovering eligible documents', hashing: 'Calculating file hashes', dry_run: 'Testing document parsing', loading_model: 'Loading the embedding model', indexing: 'Indexing documents', complete: 'Completed'};
-  const stage = stages[progress.stage] || progress.stage;
+  const stages = {discovering: 'Discovering eligible documents', hashing: 'Calculating file hashes', dry_run: 'Testing document parsing', loading_model: 'Loading the embedding model', indexing: 'Indexing documents', complete: 'Completed', failed: 'Finished with errors'};
+  const endedWithError = !s.index_running && s.last_result && s.last_result.exit_code !== 0;
+  const stage = endedWithError && progress.stage !== 'failed' ? `${s.index_error_count ? 'Finished with errors' : 'Stopped'} during ${stages[progress.stage] || progress.stage}` : stages[progress.stage] || progress.stage;
   const total = progress.total, count = progress.completed || 0;
   const percent = total > 0 ? Math.min(100, Math.round(count * 100 / total)) : null;
   $('index-progress-label').textContent = percent === null ? stage + '…' : `${stage}: ${count} of ${total} (${percent}%)`;
   bar.classList.remove('hidden');
+  bar.classList.toggle('failed', progress.stage === 'failed' || endedWithError);
   if (percent === null) bar.removeAttribute('value'); else bar.value = percent;
 }
 function renderGpuStatus(s) {
@@ -344,19 +393,20 @@ async function refresh() {
     renderSetupProgress(s);
     renderScanStatus(s);
     renderIndexProgress(s);
+    renderIndexErrors(s);
     renderGpuStatus(s);
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), ...(s.agent_managed ? [badge('Host agent', s.agent_connected)] : []));
     const syncState = s.agent_error ? 'Host sync failed: ' + s.agent_error : !s.agent_connected ? s.agent_managed ? 'Automatic host agent unavailable' : 'Host folder access is not configured' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
-    $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.config.initial_index_skipped && (!s.last_result || s.last_result.dry_run) ? 'Initial indexing has not run yet.' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} ${s.last_result.exit_code === 0 ? 'completed' : 'failed'} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
+    $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.config.initial_index_skipped && (!s.last_result || s.last_result.dry_run) ? 'Initial indexing has not run yet.' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} ${s.last_result.exit_code === 0 ? 'completed' : s.index_error_count ? 'finished with document errors' : 'failed'} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
     $('overview-state').textContent = s.index_running ? 'Indexing is in progress. Open Indexing to follow it.' : s.config.initial_index_skipped && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Initial indexing failed. Open Indexing to review the log and retry.' : s.config.initial_index_skipped ? 'Initial indexing was postponed. Your documents will be searchable after you run it.' : '';
     $('overview-state').classList.toggle('hidden', !$('overview-state').textContent);
     $('overview-open-indexing').classList.toggle('hidden', !s.index_running && !s.config.initial_index_skipped);
     $('log').textContent = s.log || 'No run yet.'; $('setup-log').textContent = s.log || 'No run yet.';
     $('dry').disabled = s.index_running; $('run').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
-    $('run').textContent = s.config.active_embedding_model && s.config.active_embedding_model !== s.config.embedding_model ? 'Index with selected model' : s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
+    $('run').textContent = s.config.active_embedding_model && s.config.active_embedding_model !== s.config.embedding_model ? 'Index with selected model' : s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Retry incremental update' : s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
     document.querySelectorAll('[data-qdrant]').forEach(x => x.disabled = !s.qdrant_managed);
     $('dashboard-qdrant-start').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);
     $('wizard-qdrant').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);

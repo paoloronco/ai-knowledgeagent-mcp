@@ -49,6 +49,7 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
         status.config = {...status.config, embedding_model: body.model};
         result = status.config;
       } else if (route === '/api/status') result = status;
+      else if (route === '/api/policy') result = body ? {saved: true} : {policy: {exclude_files: []}, content: 'exclude_files: []'};
       else if (route === '/api/folder/check') result = {reachable: true, mode: 'host_agent'};
       else if (route === '/api/scan/files') result = {files: ['notes/first.md', 'notes/second.md', 'notes/third.md']};
       else if (route === '/api/agent/refresh') result = {sync_request: 1};
@@ -103,6 +104,40 @@ test('dashboard reports NVIDIA driver and the actual embedding device', async ()
   status.embedding_device_preference = 'cuda';
   await vm.runInContext('refresh()', context);
   assert.match(elements['overview-gpu-status'].textContent, /Embeddings: unavailable/);
+});
+
+test('indexing errors show the affected file, retry action, downloads and ignore option', async () => {
+  const {elements, calls, context, status} = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
+  status.last_result = {dry_run: false, exit_code: 1, finished_at: 1};
+  status.index_error_count = 1;
+  status.index_error_origin = 'current';
+  status.index_errors = [{source: 'notes/bad.docx', stage: 'indexing', error_type: 'PackageNotFoundError', message: 'Invalid package', can_ignore: true, ignored: false}];
+  status.index_log_available = true;
+  status.index_stages_available = true;
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['index-errors-summary'].textContent, /1 document has errors/);
+  assert.equal(elements['index-errors-list'].children[0].children[0].textContent, 'notes/bad.docx');
+  assert.equal(elements.run.textContent, 'Retry incremental update');
+  assert.equal(elements['download-index-full'].classList.contains('hidden'), false);
+  assert.equal(elements['download-index-stages'].classList.contains('hidden'), false);
+  vm.runInContext('loadPolicy = async () => {}', context);
+  await elements['index-errors-list'].children[0].children[2].onclick();
+  assert.deepEqual(calls.find(x => x.route === '/api/policy' && x.body).body.policy.exclude_files, ['notes/bad.docx']);
+});
+
+test('older Office lock errors are marked as already excluded and lack a status log', async () => {
+  const {elements, context, status} = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
+  status.last_result = {dry_run: false, exit_code: 1, finished_at: 1};
+  status.index_error_count = 1;
+  status.index_error_origin = 'legacy';
+  status.index_errors = [{source: 'notes/~$draft.docx', stage: 'indexing', error_type: 'PackageNotFoundError', message: 'Invalid package', auto_excluded: true, can_ignore: false}];
+  status.index_log_available = true;
+  status.index_stages_available = false;
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['index-errors-summary'].textContent, /older error log/);
+  assert.match(elements['index-errors-list'].children[0].children[2].textContent, /Automatically excluded/);
+  assert.equal(elements['download-index-stages'].classList.contains('hidden'), true);
+  assert.equal(elements['index-stages-note'].classList.contains('hidden'), false);
 });
 
 test('adding a folder checks reachability and shows it in the list', async () => {

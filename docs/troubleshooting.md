@@ -30,7 +30,7 @@ The parser extracts embedded text only. It does not OCR scanned pages.
 
 ## Indexing reaches 100% but reports failures
 
-The percentage counts documents examined, including any that fail parsing or indexing. Documents completed before the error remain in Qdrant, and the next run skips unchanged documents recorded in the persistent ingestion state. To find the actual per-file errors in a Docker installation, run:
+The percentage counts documents examined, including any that fail parsing or indexing. Documents completed before the error remain in Qdrant, and the next run skips unchanged documents recorded in the persistent ingestion state. The Indexing page shows per-document errors and downloads for the full output and timestamped status log. You can fix a source file or choose **Ignore this file** to add it to the policy before retrying. Older runs may have only the full log; to inspect their per-file errors in a Docker installation, run:
 
 ```bash
 docker exec knowledge-mcp sh -lc 'find /data/ingestion -name errors.log -type f -print -exec tail -n 20 {} \;'

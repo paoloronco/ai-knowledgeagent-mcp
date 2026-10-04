@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -108,6 +109,56 @@ class EmbeddingModelTest(unittest.TestCase):
 
 
 class AdminBoundaryTest(unittest.TestCase):
+    def test_index_error_history_and_authenticated_log_downloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data = base / "data"
+            data.mkdir()
+            root = base / "documents"
+            root.mkdir()
+            policy_file = data / "index-policy.yaml"
+            policy_file.write_text(app.DEFAULT_POLICY.read_text(encoding="utf-8"), encoding="utf-8")
+            state = data / "ingestion" / "logs"
+            state.mkdir(parents=True)
+            (state / "errors.log").write_text(f"2026-10-04T14:19:12+00:00\t{root / '~$draft.docx'}\tPackageNotFoundError('invalid file')\n", encoding="utf-8")
+            (data / "ingest.log").write_text("Full indexing output\n", encoding="utf-8")
+            (data / "index-stages.log").write_text("2026-10-04T14:00:00+00:00\tindexing\t2/3\n", encoding="utf-8")
+            with patch.object(app, "DATA", data), patch.object(app, "POLICY", policy_file), patch.dict(app.os.environ, {"INGESTION_BASE_DIR": str(data / "ingestion")}):
+                controller = app.Controller.__new__(app.Controller)
+                controller.config = {"source_root": str(root)}
+                controller.last_result = {"exit_code": 1}
+                errors, origin = controller.index_errors()
+                self.assertEqual(origin, "legacy")
+                self.assertEqual(errors[0]["source"], "~$draft.docx")
+                self.assertTrue(errors[0]["auto_excluded"])
+                self.assertFalse(errors[0]["can_ignore"])
+                (data / "index-errors.jsonl").write_text(json.dumps({"source": "notes/bad.pdf", "stage": "indexing", "error_type": "ValueError", "message": "Cannot parse"}) + "\n", encoding="utf-8")
+                errors, origin = controller.index_errors()
+                self.assertEqual(origin, "current")
+                self.assertEqual([item["source"] for item in errors], ["notes/bad.pdf"])
+
+                fake = types.SimpleNamespace(password_enabled=lambda: True, sessions={}, lock=threading.RLock(), index_errors=lambda: (errors, origin))
+                with patch.object(app, "controller", fake):
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        url = f"http://127.0.0.1:{server.server_port}/api/index/log/full"
+                        with self.assertRaises(urllib.error.HTTPError) as denied:
+                            urllib.request.urlopen(url)
+                        self.assertEqual(denied.exception.code, 401)
+                        fake.password_enabled = lambda: False
+                        with urllib.request.urlopen(url) as response:
+                            self.assertIn(b"Full indexing output", response.read())
+                            self.assertIn("attachment", response.headers["Content-Disposition"])
+                        with urllib.request.urlopen(url.replace("/full", "/stages")) as response:
+                            self.assertIn(b"indexing\t2/3", response.read())
+                        with urllib.request.urlopen(url.replace("/log/full", "/errors")) as response:
+                            self.assertEqual(json.load(response)["errors"][0]["source"], "notes/bad.pdf")
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+
     def test_host_folder_and_agent_pairing_work_without_dashboard_login(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "data"

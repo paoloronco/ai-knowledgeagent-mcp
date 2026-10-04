@@ -33,21 +33,29 @@ POLICY_FILE = Path(os.getenv("POLICY_FILE", str(PROJECT_DIR / "mcp" / "index-pol
 STATE_FILE = BASE_DIR / "state" / "index-state.json"
 ERROR_LOG = BASE_DIR / "logs" / "errors.log"
 PROGRESS_FILE = Path(os.environ["INGEST_PROGRESS_FILE"]) if os.getenv("INGEST_PROGRESS_FILE") else None
+STAGES_FILE = Path(os.environ["INGEST_STAGES_FILE"]) if os.getenv("INGEST_STAGES_FILE") else None
+RUN_ERRORS_FILE = Path(os.environ["INGEST_RUN_ERRORS_FILE"]) if os.getenv("INGEST_RUN_ERRORS_FILE") else None
 _progress_last_write = 0
 _progress_last_stage = None
 
 
 def write_progress(stage, completed=0, total=None, force=False):
     global _progress_last_write, _progress_last_stage
-    if PROGRESS_FILE is None:
+    if PROGRESS_FILE is None and STAGES_FILE is None:
         return
     now = time.monotonic()
     if not force and stage == _progress_last_stage and now - _progress_last_write < 0.25:
         return
     value = {"stage": stage, "completed": completed, "total": total, "updated_at": time.time()}
-    temp = PROGRESS_FILE.with_suffix(".tmp")
-    temp.write_text(json.dumps(value), encoding="utf-8")
-    temp.replace(PROGRESS_FILE)
+    if PROGRESS_FILE is not None:
+        temp = PROGRESS_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps(value), encoding="utf-8")
+        temp.replace(PROGRESS_FILE)
+    if STAGES_FILE is not None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        amount = f"{completed}/{total}" if total is not None else str(completed)
+        with STAGES_FILE.open("a", encoding="utf-8") as output:
+            output.write(f"{timestamp}\t{stage}\t{amount}\n")
     _progress_last_write, _progress_last_stage = now, stage
 
 COLLECTION_NAME = os.getenv("DENSE_COLLECTION", "documents")
@@ -92,12 +100,21 @@ def save_state(state):
     tmp.replace(STATE_FILE)
 
 
-def log_error(path, error):
+def log_error(path, error, stage="indexing"):
     ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
 
     with ERROR_LOG.open("a", encoding="utf-8") as f:
         timestamp = datetime.now(timezone.utc).isoformat()
         f.write(f"{timestamp}\t{path}\t{repr(error)}\n")
+    if RUN_ERRORS_FILE is not None:
+        root = Path(os.getenv("KNOWLEDGE_ROOT", "")).resolve()
+        try:
+            source = path.resolve().relative_to(root).as_posix()
+        except ValueError:
+            source = path.name
+        event = {"at": timestamp, "stage": stage, "source": source, "error_type": type(error).__name__, "message": str(error)[:1000]}
+        with RUN_ERRORS_FILE.open("a", encoding="utf-8") as output:
+            output.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 def sha256_file(path):
@@ -507,7 +524,7 @@ def main():
 
         except Exception as exc:
             hash_failures += 1
-            log_error(path, exc)
+            log_error(path, exc, "hashing")
         write_progress("hashing", count, len(candidates))
     write_progress("hashing", len(candidates), len(candidates), force=True)
 
@@ -556,7 +573,7 @@ def main():
 
             except Exception as exc:
                 failed += 1
-                log_error(primary, exc)
+                log_error(primary, exc, "dry_run")
             write_progress("dry_run", count, len(unique_documents))
         write_progress("dry_run", len(unique_documents), len(unique_documents), force=True)
 
@@ -570,6 +587,7 @@ def main():
         print(f"Elapsed:          {elapsed:.1f}s")
 
         if failed or hash_failures:
+            write_progress("failed", len(unique_documents), len(unique_documents), force=True)
             raise SystemExit(1)
         write_progress("complete", parsed, parsed, force=True)
         return
@@ -747,6 +765,7 @@ def main():
     print(f"Chunks indexed:    {indexed_chunks}")
     print(f"Elapsed:           {elapsed / 60:.1f} min")
     if failed_documents or hash_failures:
+        write_progress("failed", len(unique_documents), len(unique_documents), force=True)
         raise SystemExit(1)
     write_progress("complete", len(unique_documents), len(unique_documents), force=True)
 
