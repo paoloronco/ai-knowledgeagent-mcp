@@ -350,24 +350,35 @@ function syncRoute(status) {
     showStep(step, false);
     return;
   }
-  const pending = status.config.setup_step < 7;
   const requested = location.pathname === '/dashboard' ? 'overview' : location.pathname.startsWith('/dashboard/') ? location.pathname.slice('/dashboard/'.length) : '';
-  const page = pending ? 'indexing' : dashboardPages.includes(requested) ? requested : 'overview';
+  const page = dashboardPages.includes(requested) ? requested : 'overview';
   if (location.pathname !== dashboardPath(page)) history.replaceState({}, '', dashboardPath(page));
   goDashboardPage(page);
 }
 function renderIndexProgress(s) {
-  const progress = s.config.initial_index_skipped && !s.index_running && s.last_result?.dry_run ? null : s.index_progress, bar = $('index-progress');
-  if (!progress) { bar.classList.add('hidden'); $('index-progress-label').textContent = s.index_running ? 'Starting…' : ''; return; }
+  const progress = s.config.initial_index_skipped && !s.index_running && s.last_result?.dry_run ? null : s.index_progress;
+  const bar = $('index-progress'), overview = $('overview-indexing-progress'), overviewBar = $('overview-index-progress');
+  overview.classList.toggle('hidden', !s.index_running);
+  if (!progress) {
+    bar.classList.add('hidden'); $('index-progress-label').textContent = s.index_running ? 'Starting…' : '';
+    $('overview-index-progress-label').textContent = s.index_running ? 'Starting…' : '';
+    if (s.index_running) overviewBar.removeAttribute('value');
+    return;
+  }
   const stages = {discovering: 'Discovering eligible documents', hashing: 'Calculating file hashes', dry_run: 'Testing document parsing', loading_model: 'Loading the embedding model', indexing: 'Indexing documents', complete: 'Completed', failed: 'Finished with errors'};
   const endedWithError = !s.index_running && s.last_result && s.last_result.exit_code !== 0;
   const stage = endedWithError && progress.stage !== 'failed' ? `${s.index_error_count ? 'Finished with errors' : 'Stopped'} during ${stages[progress.stage] || progress.stage}` : stages[progress.stage] || progress.stage;
   const total = progress.total, count = progress.completed || 0;
   const percent = total > 0 ? Math.min(100, Math.round(count * 100 / total)) : null;
-  $('index-progress-label').textContent = percent === null ? stage + '…' : `${stage}: ${count} of ${total} (${percent}%)`;
+  const label = percent === null ? stage + '…' : `${stage}: ${count} of ${total} (${percent}%)`;
+  $('index-progress-label').textContent = label;
   bar.classList.remove('hidden');
   bar.classList.toggle('failed', progress.stage === 'failed' || endedWithError);
   if (percent === null) bar.removeAttribute('value'); else bar.value = percent;
+  if (s.index_running) {
+    $('overview-index-progress-label').textContent = label;
+    if (percent === null) overviewBar.removeAttribute('value'); else overviewBar.value = percent;
+  }
 }
 function renderGpuStatus(s) {
   const gpu = s.gpu || {checking: true};
@@ -449,9 +460,11 @@ async function refresh() {
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
     $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.config.initial_index_skipped && (!s.last_result || s.last_result.dry_run) ? 'Initial indexing has not run yet.' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} ${s.last_result.exit_code === 0 ? 'completed' : s.index_error_count ? 'finished with document errors' : 'failed'} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
-    $('overview-state').textContent = s.index_running ? 'Indexing is in progress. Open Indexing to follow it.' : s.config.initial_index_skipped && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Initial indexing failed. Open Indexing to review the log and retry.' : s.config.initial_index_skipped ? 'Initial indexing was postponed. Your documents will be searchable after you run it.' : '';
+    const initialIndexFailed = s.config.setup_step < 7 && !s.index_running && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0;
+    $('overview-state').textContent = s.index_running ? 'Indexing is in progress.' : initialIndexFailed ? 'Initial indexing failed. Open Indexing to review the log and retry.' : s.config.initial_index_skipped ? 'Initial indexing was postponed. Your documents will be searchable after you run it.' : '';
     $('overview-state').classList.toggle('hidden', !$('overview-state').textContent);
-    $('overview-open-indexing').classList.toggle('hidden', !s.index_running && !s.config.initial_index_skipped);
+    $('overview-open-indexing').classList.toggle('hidden', !s.index_running && !s.config.initial_index_skipped && !initialIndexFailed);
+    $('index-open-dashboard').classList.toggle('hidden', s.config.setup_step >= 7);
     $('log').textContent = s.log || 'No run yet.'; $('setup-log').textContent = s.log || 'No run yet.';
     $('dry').disabled = s.index_running; $('run').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
     $('run').textContent = s.config.active_embedding_model && s.config.active_embedding_model !== s.config.embedding_model ? 'Index with selected model' : s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Retry incremental update' : s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
@@ -469,7 +482,7 @@ async function refresh() {
     $('skip-initial-index').disabled = s.index_running;
     $('wizard').classList.toggle('hidden', s.config.onboarding_complete); $('dashboard').classList.toggle('hidden', !s.config.onboarding_complete);
     $('setup-progress-card').classList.toggle('hidden', s.config.onboarding_complete);
-    $('dashboard-nav').classList.toggle('hidden', s.config.setup_step < 7);
+    $('dashboard-nav').classList.toggle('hidden', !s.config.onboarding_complete);
     refreshError = null;
   } catch (e) {
     if (refreshError !== e.message) message(e.message, true);

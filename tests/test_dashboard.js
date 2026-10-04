@@ -268,19 +268,38 @@ test('successful dry run enables Continue to indexing', async () => {
   assert.equal(calls.find(x => x.route === '/api/onboarding/progress').body.step, 6);
 });
 
-test('indexing progress is visible alone until initial indexing finishes', async () => {
+test('initial indexing can continue while the user follows progress from the dashboard', async () => {
   const {elements, context, status, panels, location} = dashboard({...legacy, onboarding_complete: true, setup_step: 6}, true);
   status.index_running = true;
   status.index_progress = {stage: 'indexing', completed: 25, total: 100};
   await vm.runInContext('refresh()', context);
   assert.equal(elements['setup-progress-card'].classList.contains('hidden'), true);
-  assert.equal(elements['dashboard-nav'].classList.contains('hidden'), true);
+  assert.equal(elements['dashboard-nav'].classList.contains('hidden'), false);
+  assert.equal(elements['index-open-dashboard'].classList.contains('hidden'), false);
   assert.match(elements['index-progress-label'].textContent, /25 of 100 \(25%\)/);
   assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'indexing');
-  status.index_running = false;
-  status.config.setup_step = 7;
-  await vm.runInContext('refresh()', context);
   vm.runInContext("goDashboardPage('overview', true)", context);
+  await vm.runInContext('refresh()', context);
+  assert.equal(location.pathname, '/dashboard');
+  assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'overview');
+  assert.equal(elements['overview-indexing-progress'].classList.contains('hidden'), false);
+  assert.match(elements['overview-index-progress-label'].textContent, /25 of 100 \(25%\)/);
+  assert.equal(elements['overview-index-progress'].value, 25);
+  status.index_progress.completed = 60;
+  await vm.runInContext('refresh()', context);
+  assert.equal(location.pathname, '/dashboard');
+  assert.match(elements['overview-index-progress-label'].textContent, /60 of 100 \(60%\)/);
+  assert.equal(elements['overview-index-progress'].value, 60);
+  status.index_running = false;
+  status.last_result = {dry_run: false, exit_code: 1, finished_at: 1};
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['overview-state'].textContent, /Initial indexing failed/);
+  assert.equal(elements['overview-open-indexing'].classList.contains('hidden'), false);
+  status.config.setup_step = 7;
+  status.last_result.exit_code = 0;
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['overview-indexing-progress'].classList.contains('hidden'), true);
+  assert.equal(elements['index-open-dashboard'].classList.contains('hidden'), true);
   assert.equal(location.pathname, '/dashboard');
   assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'overview');
 });
