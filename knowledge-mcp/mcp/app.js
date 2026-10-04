@@ -3,7 +3,7 @@ let current = null, policy = null, wizardStep = 0, authRequired = false, folderP
 let messageTimer = null, refreshError = null;
 const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
 const setupPaths = ['/setup/login', '/setup/health', '/setup/folders', '/setup/policy', '/setup/eligible', '/setup/dry-run', '/setup/indexing'];
-const dashboardPages = ['overview', 'indexing', 'services', 'folders', 'policy', 'access'];
+const dashboardPages = ['overview', 'indexing', 'folders', 'policy', 'access'];
 
 async function api(path, data) {
   const options = data === undefined ? {} : {
@@ -285,21 +285,19 @@ async function refresh() {
     renderScanStatus(s);
     renderIndexProgress(s);
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
-    $('overview-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), ...(s.agent_managed ? [badge('Host agent', s.agent_connected)] : []));
-    $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
     const syncState = s.agent_error ? 'Host sync failed: ' + s.agent_error : !s.agent_connected ? s.agent_managed ? 'Automatic host agent unavailable' : 'Host folder access is not configured' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
     $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.config.initial_index_skipped && (!s.last_result || s.last_result.dry_run) ? 'Initial indexing has not run yet.' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} ${s.last_result.exit_code === 0 ? 'completed' : 'failed'} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
-    $('overview-state').textContent = s.index_running ? 'Indexing is in progress. Open Indexing to follow it.' : s.config.initial_index_skipped && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Initial indexing failed. Open Indexing to review the log and retry.' : s.config.initial_index_skipped ? 'Initial indexing was postponed. Your documents will be searchable after you run it.' : s.config.setup_step < 7 ? 'Initial indexing is pending.' : 'Setup is complete. Use the sections below to manage your documents and services.';
-    const readyForMcp = !s.index_running && s.last_result && !s.last_result.dry_run && s.last_result.exit_code === 0 && s.qdrant_ready;
-    $('start-after-index').disabled = !readyForMcp || s.mcp_running;
-    $('mcp-guidance').textContent = s.index_running ? 'Wait for indexing to finish before starting MCP.' : readyForMcp && !s.mcp_running ? 'Indexing is complete. You can start MCP.' : s.mcp_running ? 'MCP is running.' : '';
+    $('overview-state').textContent = s.index_running ? 'Indexing is in progress. Open Indexing to follow it.' : s.config.initial_index_skipped && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Initial indexing failed. Open Indexing to review the log and retry.' : s.config.initial_index_skipped ? 'Initial indexing was postponed. Your documents will be searchable after you run it.' : '';
+    $('overview-state').classList.toggle('hidden', !$('overview-state').textContent);
+    $('overview-open-indexing').classList.toggle('hidden', !s.index_running && !s.config.initial_index_skipped);
     $('log').textContent = s.log || 'No run yet.'; $('setup-log').textContent = s.log || 'No run yet.';
     $('dry').disabled = s.index_running; $('run').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
     $('run').textContent = s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
     document.querySelectorAll('[data-qdrant]').forEach(x => x.disabled = !s.qdrant_managed);
+    $('dashboard-qdrant-start').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);
     $('wizard-qdrant').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);
     $('wizard-qdrant').disabled = !s.qdrant_managed;
     $('next-run').textContent = s.next_run_at ? 'Next update: ' + new Date(s.next_run_at * 1000).toLocaleString('en-GB') : 'Scheduling is off';

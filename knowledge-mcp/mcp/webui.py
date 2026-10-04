@@ -40,7 +40,7 @@ HTML = Path(__file__).with_name("webui.html")
 SCRIPT = Path(__file__).with_name("app.js")
 TOKEN = secrets.token_urlsafe(32)
 SETUP_PATHS = ("/setup/login", "/setup/health", "/setup/folders", "/setup/policy", "/setup/eligible", "/setup/dry-run", "/setup/indexing")
-DASHBOARD_PATHS = ("/dashboard", "/dashboard/indexing", "/dashboard/services", "/dashboard/folders", "/dashboard/policy", "/dashboard/access")
+DASHBOARD_PATHS = ("/dashboard", "/dashboard/indexing", "/dashboard/folders", "/dashboard/policy", "/dashboard/access")
 
 
 def validate_source_root(value):
@@ -943,6 +943,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._allowed_host():
             self.send(403, json.dumps({"error": "Host not allowed"}))
+            return
+        if self.path == "/dashboard/services":
+            self.send_response(302)
+            self.send_header("Location", "/dashboard")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
             return
         if self.path == "/api/auth":
             self.send(200, json.dumps({"required": controller.password_enabled(), "authenticated": self._authenticated()}))

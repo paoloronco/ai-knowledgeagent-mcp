@@ -54,7 +54,7 @@ Once the application has been deployed with networking and document access confi
 - After saving the policy, press **Scan** to view the eligible count and a preview. **View all eligible documents** opens the full list and offers TXT, LOG, and JSON downloads. The dry run starts only after the scan finds eligible documents.
 - Initial indexing opens the dedicated indexing page with live stage, document count, percentage where available, and the log. You can also select **Skip for now** to open `/dashboard` and start initial indexing later from `/dashboard/indexing`. The dashboard sections have separate `/dashboard/…` URLs.
 - After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.
-- Use the dashboard to manage services and schedule incremental indexing.
+- The main `/dashboard` page shows service health and Qdrant/MCP controls. Document folder sync status and scheduling live under `/dashboard/folders`; use `/dashboard/indexing` for indexing progress and updates.
 - Persistent Docker volumes retain documents, settings, indexing state, the model cache, Qdrant data, and the agent connection across container updates.
 
 ## More information

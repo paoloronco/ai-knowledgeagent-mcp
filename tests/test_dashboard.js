@@ -143,12 +143,15 @@ test('Service health shows Start Qdrant only while managed Qdrant is unavailable
   status.qdrant_ready = true;
   await vm.runInContext('refresh()', context);
   assert.equal(elements['wizard-qdrant'].classList.contains('hidden'), true);
+  assert.equal(elements['dashboard-qdrant-start'].classList.contains('hidden'), true);
   status.qdrant_ready = false;
   await vm.runInContext('refresh()', context);
   assert.equal(elements['wizard-qdrant'].classList.contains('hidden'), false);
+  assert.equal(elements['dashboard-qdrant-start'].classList.contains('hidden'), false);
   status.qdrant_managed = false;
   await vm.runInContext('refresh()', context);
   assert.equal(elements['wizard-qdrant'].classList.contains('hidden'), true);
+  assert.equal(elements['dashboard-qdrant-start'].classList.contains('hidden'), true);
 });
 
 test('onboarding continues with dashboard login disabled', async () => {
@@ -194,9 +197,28 @@ test('indexing progress is visible alone until initial indexing finishes', async
   status.index_running = false;
   status.config.setup_step = 7;
   await vm.runInContext('refresh()', context);
-  vm.runInContext("goDashboardPage('services', true)", context);
-  assert.equal(location.pathname, '/dashboard/services');
-  assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'services');
+  vm.runInContext("goDashboardPage('overview', true)", context);
+  assert.equal(location.pathname, '/dashboard');
+  assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'overview');
+});
+
+test('dashboard contains service controls and folder sync detail stays with folders', async () => {
+  const {elements, context, status, panels, location} = dashboard({...legacy, onboarding_complete: true, setup_step: 7}, true, '/dashboard');
+  status.agent_synced = true;
+  status.agent_last_sync_at = 1;
+  await vm.runInContext('refresh()', context);
+  assert.equal(panels.find(x => x.classList.contains('active')).dataset.page, 'overview');
+  assert.deepEqual(elements['health'].children.map(x => x.textContent.split(':')[0]), ['App', 'Qdrant', 'MCP', 'Documents', 'Host agent']);
+  assert.equal(elements['overview-open-indexing'].classList.contains('hidden'), true);
+  assert.match(elements['agent-status'].textContent, /Host documents synchronized/);
+  assert.equal(html.includes('data-page="services"'), false);
+  assert.equal(html.includes('data-nav-page="services"'), false);
+  assert.equal(html.includes('id="source-root"'), false);
+  assert.equal(html.includes('Wait for indexing to finish before starting MCP.'), false);
+  assert.equal(html.includes('Start MCP after indexing'), false);
+  location.pathname = '/dashboard/services';
+  vm.runInContext('syncRoute(current)', context);
+  assert.equal(location.pathname, '/dashboard');
 });
 
 test('setup routes can be opened directly and navigation updates the URL', () => {
@@ -223,6 +245,7 @@ test('skipping initial indexing opens the dashboard and keeps indexing available
   assert.equal(elements['dashboard-nav'].classList.contains('hidden'), false);
   assert.equal(panels.find(x => x.classList.contains('active')).dataset.page, 'overview');
   assert.match(elements['overview-state'].textContent, /postponed/);
+  assert.equal(elements['overview-open-indexing'].classList.contains('hidden'), false);
   vm.runInContext("goDashboardPage('indexing', true)", context);
   assert.equal(location.pathname, '/dashboard/indexing');
   assert.equal(elements['run'].textContent, 'Start initial indexing');
