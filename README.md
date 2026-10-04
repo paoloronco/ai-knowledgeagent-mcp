@@ -40,6 +40,23 @@ docker run -d --name knowledge-mcp-host-agent --restart unless-stopped \
 
 Both containers use `paoloronco/knowledge-mcp:latest`, but have separate names and roles: `knowledge-mcp` runs the Web UI, MCP, and Qdrant; `knowledge-mcp-host-agent` runs `host_agent.py`, reads the Linux host through `/host`, and shares the app container's network. The [Compose deployment](docs/docker.md#linuxnas-deployment) uses the same names and roles.
 
+### NVIDIA GPU
+
+On a Linux Docker host with an NVIDIA driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html), use the `:cuda` image for the **app container** and add `--gpus all` to its `docker run` command:
+
+```bash
+docker pull paoloronco/knowledge-mcp:cuda
+docker run -d --name knowledge-mcp --restart unless-stopped --gpus all \
+  -p 8080:8080 -p 8000:8000 \
+  -e AUTO_HOST_AGENT_CONFIG=/run/host-agent/agent.json \
+  -v knowledge_app:/data \
+  -v knowledge_qdrant:/qdrant/storage \
+  -v knowledge_agent:/run/host-agent \
+  paoloronco/knowledge-mcp:cuda
+```
+
+The host agent command above stays on `:latest` and needs no GPU. For Compose, run `docker compose -f compose.yaml -f compose.gpu.yaml up -d`. To switch an existing installation, recreate the containers while keeping the same named volumes as described in [deployment notes](docs/docker.md); your indexing and settings remain in those volumes. Verify host GPU access with `docker run --rm --gpus all ubuntu nvidia-smi`. The dashboard shows the detected device, driver, free/total VRAM, CUDA availability, and whether embeddings use GPU or CPU. The CUDA image also runs on CPU if Docker exposes no GPU; set `EMBEDDING_DEVICE=cpu` to force CPU or `EMBEDDING_DEVICE=cuda` to fail fast when CUDA is unavailable.
+
 The companion reads the selected Linux folder through a read-only host mount, applies the indexing policy, and synchronizes eligible documents into the app volume. It exposes no port and needs no Docker socket. Select a folder such as `/mnt/documents` in the Web UI; dashboard login is optional. See [deployment and migration notes](docs/docker.md) for updates and the alternative Compose setup.
 
 The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isolated foreground container. An image cannot set the host's published ports, mounts, or restart policy; Docker requires those options at container creation. See Docker's [port publication](https://docs.docker.com/get-started/docker-concepts/running-containers/publishing-ports/) and [restart policy](https://docs.docker.com/engine/containers/start-containers-automatically/) documentation.
@@ -52,7 +69,7 @@ Once the application has been deployed with networking and document access confi
 - Onboarding guides you through optional dashboard login, service checks, document folder selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a manual document scan, a dry-run test, and initial indexing. Each step has its own URL under `/setup/` (for example, `/setup/folders` and `/setup/eligible`), so you can reload or bookmark the current step. If you skip login, anyone who can reach port 8080 can manage the dashboard.
 - Enter a folder path such as `/mnt/documents` and click **+**. The app checks access before adding it to the list; you can add or remove multiple folders that share a non-root parent. With the host agent connected, paths refer to folders on the Linux host.
 - After saving the policy, press **Scan** to view the eligible count and a preview. **View all eligible documents** opens the full list and offers TXT, LOG, and JSON downloads. The dry run starts only after the scan finds eligible documents.
-- In **Initial indexing**, choose an embedding model for your hardware and document mix. The same selection is available later at `/dashboard/indexing`. E5 small is the CPU-friendly default; E5 base needs more resources; BGE-M3 is the heaviest option. The cards show vector dimensions and qualitative resource guidance, not benchmark guarantees. All three run on CPU in the published image; each model downloads on first indexing and is cached in the persistent app volume.
+- In **Initial indexing**, choose an embedding model for your hardware and document mix. The same selection is available later at `/dashboard/indexing`. E5 small is the CPU-friendly default; E5 base needs more resources; BGE-M3 is the heaviest option. The cards show vector dimensions and qualitative resource guidance, not benchmark guarantees. The `:latest` image uses CPU and the `:cuda` image uses an exposed NVIDIA GPU automatically; each model downloads on first indexing and is cached in the persistent app volume.
 - Initial indexing opens the dedicated indexing page with live stage, document count, percentage where available, and the log. You can also select **Skip for now** to open `/dashboard` and start initial indexing later from `/dashboard/indexing`. The dashboard sections have separate `/dashboard/…` URLs.
 - Changing models keeps the searchable index on the previous model until the new indexing run succeeds. Each choice has its own Qdrant collection and ingestion state. Returning to a previously indexed model updates its existing index; retaining multiple models uses additional disk space. The dry run checks parsing only and does not download or evaluate a model. BGE-M3 uses dense vectors in this app, with the same short document chunks as the other profiles.
 - After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.

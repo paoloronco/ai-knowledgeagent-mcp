@@ -23,6 +23,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "mcp"))
 from policy_defaults import REQUIRED_DIRECTORY_NAMES, REQUIRED_TOP_LEVEL_NAMES, ensure_required_exclusions, remove_legacy_default_exclusions
 from embedding_models import document_text
+from embedding_device import embedding_device
 
 load_dotenv(PROJECT_DIR / ".env")
 
@@ -579,9 +580,11 @@ def main():
 
     from sentence_transformers import SentenceTransformer
 
+    device = embedding_device()
+    print(f"Embedding device: {device.upper()}")
     model = SentenceTransformer(
         MODEL_NAME,
-        device="cpu",
+        device=device,
     )
 
     client = QdrantClient(url=QDRANT_URL)

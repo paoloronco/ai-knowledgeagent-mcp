@@ -11,14 +11,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MCP_HOST=0.0.0.0 \
     QDRANT_URL=http://127.0.0.1:6333 \
     QDRANT__SERVICE__HOST=127.0.0.1 \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     RUN_MODE=production
 
 WORKDIR /app
 COPY requirements.txt .
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG TORCH_EXPECTED_CUDA=cpu
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libunwind8 \
     && rm -rf /var/lib/apt/lists/* \
-    && python -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
-    && python -m pip install --no-cache-dir -r requirements.txt
+    && python -m pip install --no-cache-dir torch==2.14.0 --index-url "$TORCH_INDEX_URL" \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -c "import os, torch; expected=os.environ['TORCH_EXPECTED_CUDA']; assert (torch.version.cuda or 'cpu') == expected, (torch.version.cuda, expected)"
 COPY --from=qdrant /qdrant/qdrant /qdrant/qdrant
 COPY --from=qdrant /qdrant/config /qdrant/config
 COPY --from=qdrant /qdrant/static /qdrant/static

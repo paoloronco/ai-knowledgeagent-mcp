@@ -8,6 +8,8 @@ Alternatively, the repository's [compose.yaml](../compose.yaml) configures the a
 
 Compose creates two distinct containers from `paoloronco/knowledge-mcp:latest`: `knowledge-mcp` for the Web UI, MCP, and Qdrant, and `knowledge-mcp-host-agent` for `host_agent.py`. The host agent mounts the Linux host at `/host` read-only and shares the app container's network.
 
+For an NVIDIA GPU, install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the Docker host, then run `docker compose -f compose.yaml -f compose.gpu.yaml up -d`. The override changes only the app container to `paoloronco/knowledge-mcp:cuda` and reserves one NVIDIA GPU; the host agent remains on `:latest`. Use both `-f` flags on subsequent `pull`, `up`, and `stop` commands. The CUDA image uses PyTorch CUDA 12.6 when available and falls back to CPU otherwise. The dashboard displays the driver, GPU memory, and actual CUDA readiness. The [GPU Compose reservation](https://docs.docker.com/compose/how-tos/gpu-support/) requires Docker GPU support.
+
 ```bash
 docker compose up -d
 ```

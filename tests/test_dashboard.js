@@ -87,6 +87,24 @@ test('model choice shows hardware guidance and keeps active search until indexin
   assert.equal(elements.run.textContent, 'Index with selected model');
 });
 
+test('dashboard reports NVIDIA driver and the actual embedding device', async () => {
+  const {elements, context, status} = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
+  status.gpu = {checking: false, detected: true, usable: true, cuda_runtime: '12.6', reason: 'CUDA ready.', devices: [
+    {name: 'NVIDIA GeForce RTX 3070', driver: '617.14', memory_free_mb: 4720, memory_total_mb: 8192}
+  ]};
+  status.embedding_device_preference = 'auto';
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['overview-gpu-status'].textContent, /driver 617\.14/);
+  assert.match(elements['index-gpu-status'].textContent, /Embeddings: GPU/);
+  status.gpu = {...status.gpu, usable: false, cuda_runtime: null, reason: 'This image has CPU-only PyTorch.'};
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['overview-gpu-status'].textContent, /Embeddings: CPU/);
+  assert.match(elements['overview-gpu-status'].textContent, /CPU-only PyTorch/);
+  status.embedding_device_preference = 'cuda';
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['overview-gpu-status'].textContent, /Embeddings: unavailable/);
+});
+
 test('adding a folder checks reachability and shows it in the list', async () => {
   const {elements, calls, context} = dashboard(legacy);
   elements['setup-source-root'].value = '/mnt/documents';

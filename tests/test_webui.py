@@ -19,11 +19,33 @@ sys.path.insert(0, str(ROOT / "mcp"))
 import webui as app
 import policy_defaults
 from embedding_models import MODELS, document_text, query_text
+from embedding_device import embedding_device
+from gpu_probe import parse_devices
 sys.path.insert(0, str(ROOT))
 import host_agent
 
 
 class EmbeddingModelTest(unittest.TestCase):
+    def test_embedding_device_uses_cuda_when_available_and_allows_cpu_override(self):
+        fake_torch = Mock()
+        fake_torch.cuda.is_available.return_value = True
+        with patch.dict(sys.modules, {"torch": fake_torch}), patch.dict(app.os.environ, {"EMBEDDING_DEVICE": "auto"}):
+            self.assertEqual(embedding_device(), "cuda")
+        with patch.dict(sys.modules, {"torch": fake_torch}), patch.dict(app.os.environ, {"EMBEDDING_DEVICE": "cpu"}):
+            self.assertEqual(embedding_device(), "cpu")
+        fake_torch.cuda.is_available.return_value = False
+        with patch.dict(sys.modules, {"torch": fake_torch}), patch.dict(app.os.environ, {"EMBEDDING_DEVICE": "auto"}):
+            self.assertEqual(embedding_device(), "cpu")
+        with patch.dict(sys.modules, {"torch": fake_torch}), patch.dict(app.os.environ, {"EMBEDDING_DEVICE": "cuda"}):
+            with self.assertRaisesRegex(RuntimeError, "CUDA was requested"):
+                embedding_device()
+
+    def test_gpu_probe_parses_device_and_driver(self):
+        self.assertEqual(parse_devices("0, NVIDIA GeForce RTX 3070, 617.14, 8192, 4720\n"), [{
+            "index": 0, "name": "NVIDIA GeForce RTX 3070", "driver": "617.14",
+            "memory_total_mb": 8192, "memory_free_mb": 4720,
+        }])
+
     def test_profiles_keep_collections_distinct_and_format_text(self):
         self.assertEqual(len({item["collection"] for item in MODELS.values()}), len(MODELS))
         self.assertEqual(document_text(MODELS["e5-small"]["model"], "hello"), "passage: hello")

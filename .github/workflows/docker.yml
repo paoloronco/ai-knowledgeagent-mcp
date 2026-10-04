@@ -32,6 +32,7 @@ jobs:
           node --test tests/test_dashboard.js
           docker compose config --quiet
           docker compose config --format json > "$RUNNER_TEMP/knowledge-compose.json"
+          docker compose -f compose.yaml -f compose.gpu.yaml config --format json > "$RUNNER_TEMP/knowledge-compose-gpu.json"
           python - <<'PY'
           import json
           import os
@@ -51,6 +52,10 @@ jobs:
           assert agent["read_only"] and agent["network_mode"] == "service:app"
           assert agent["cap_drop"] == ["ALL"] and agent["cap_add"] == ["DAC_READ_SEARCH"]
           assert any(mount["source"] == "/" and mount["target"] == "/host" and mount["read_only"] for mount in agent["volumes"])
+          gpu_config = json.loads((Path(os.environ["RUNNER_TEMP"]) / "knowledge-compose-gpu.json").read_text())
+          assert gpu_config["services"]["app"]["image"] == "paoloronco/knowledge-mcp:cuda"
+          assert gpu_config["services"]["host-agent"]["image"] == "paoloronco/knowledge-mcp:latest"
+          assert gpu_config["services"]["app"]["deploy"]["resources"]["reservations"]["devices"][0]["capabilities"] == ["gpu"]
           PY
       - uses: docker/setup-buildx-action@v4
       - name: Build for startup test
@@ -221,6 +226,25 @@ jobs:
         run: |
           echo '::error::Docker Hub login failed; verify DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.'
           exit 1
+      - uses: docker/metadata-action@v6
+        id: meta_cuda
+        with:
+          images: paoloronco/knowledge-mcp
+          tags: |
+            type=raw,value=cuda,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag,prefix=cuda-
+      - name: Build and publish CUDA image
+        if: github.event_name != 'pull_request' && steps.login.outcome == 'success'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./knowledge-mcp
+          file: ./knowledge-mcp/Dockerfile
+          push: true
+          tags: ${{ steps.meta_cuda.outputs.tags }}
+          labels: ${{ steps.meta_cuda.outputs.labels }}
+          build-args: |
+            TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126
+            TORCH_EXPECTED_CUDA=12.6
       - name: Remove previous SHA image tags
         if: github.ref == 'refs/heads/main' && steps.login.outcome == 'success'
         env:

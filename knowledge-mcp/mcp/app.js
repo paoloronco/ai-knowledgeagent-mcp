@@ -320,6 +320,22 @@ function renderIndexProgress(s) {
   bar.classList.remove('hidden');
   if (percent === null) bar.removeAttribute('value'); else bar.value = percent;
 }
+function renderGpuStatus(s) {
+  const gpu = s.gpu || {checking: true};
+  let status;
+  if (gpu.checking) status = 'Checking GPU…';
+  else {
+    const device = s.embedding_device_preference === 'cuda' && !gpu.usable ? 'unavailable'
+      : gpu.usable && s.embedding_device_preference !== 'cpu' ? 'GPU' : 'CPU';
+    const hardware = gpu.devices?.length
+      ? gpu.devices.map(item => `${item.name} (driver ${item.driver}, ${item.memory_free_mb} / ${item.memory_total_mb} MiB free)`).join('; ')
+      : 'No NVIDIA GPU detected in this container';
+    const runtime = gpu.cuda_runtime ? ` · PyTorch CUDA ${gpu.cuda_runtime}` : '';
+    const override = s.embedding_device_preference === 'cpu' ? ' · CPU selected by EMBEDDING_DEVICE' : s.embedding_device_preference === 'cuda' && !gpu.usable ? ' · CUDA requested but unavailable' : '';
+    status = `${hardware}${runtime} · Embeddings: ${device}${override}. ${gpu.reason || ''}`;
+  }
+  for (const id of ['wizard-gpu-status', 'overview-gpu-status', 'index-gpu-status']) $(id).textContent = status;
+}
 async function refresh() {
   try {
     const s = await api('/api/status'); current = s;
@@ -328,6 +344,7 @@ async function refresh() {
     renderSetupProgress(s);
     renderScanStatus(s);
     renderIndexProgress(s);
+    renderGpuStatus(s);
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), ...(s.agent_managed ? [badge('Host agent', s.agent_connected)] : []));
     const syncState = s.agent_error ? 'Host sync failed: ' + s.agent_error : !s.agent_connected ? s.agent_managed ? 'Automatic host agent unavailable' : 'Host folder access is not configured' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';

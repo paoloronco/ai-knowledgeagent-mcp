@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 from qdrant_client import QdrantClient
 from policy_defaults import REQUIRED_DIRECTORY_NAMES
 from embedding_models import query_text
+from embedding_device import embedding_device
 
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
@@ -1110,7 +1111,7 @@ def search(query):
         CORPUS = load_corpus()
     if model is None:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer(MODEL_NAME, device="cpu")
+        model = SentenceTransformer(MODEL_NAME, device=embedding_device())
 
     temporal_intent = (
         detect_temporal_intent(query)

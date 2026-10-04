@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 import yaml
 from host_sync import allowed_file, host_root, relative_path
 from embedding_models import DEFAULT_MODEL, MODELS
+from gpu_probe import GPU_MONITOR
 from policy_defaults import ensure_required_exclusions, remove_legacy_default_exclusions
 
 
@@ -888,6 +889,8 @@ class Controller:
             return {
                 "config": dict(self.config),
                 "embedding_models": MODELS,
+                "gpu": GPU_MONITOR.status(),
+                "embedding_device_preference": os.getenv("EMBEDDING_DEVICE", "auto"),
                 "document_paths": document_paths(self.config),
                 "app_ready": True,
                 "qdrant_ready": qdrant,
