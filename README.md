@@ -49,10 +49,10 @@ The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isol
 Once the application has been deployed with networking and document access configured:
 
 - Open `http://HOST_IP:8080`.
-- Onboarding guides you through optional dashboard login, service checks, document folder selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a manual document scan, a dry-run test, and initial indexing. If you skip login, anyone who can reach port 8080 can manage the dashboard.
+- Onboarding guides you through optional dashboard login, service checks, document folder selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a manual document scan, a dry-run test, and initial indexing. Each step has its own URL under `/setup/` (for example, `/setup/folders` and `/setup/eligible`), so you can reload or bookmark the current step. If you skip login, anyone who can reach port 8080 can manage the dashboard.
 - Enter a folder path such as `/mnt/documents` and click **+**. The app checks access before adding it to the list; you can add or remove multiple folders that share a non-root parent. With the host agent connected, paths refer to folders on the Linux host.
 - After saving the policy, press **Scan** to view the eligible count and a preview. **View all eligible documents** opens the full list and offers TXT, LOG, and JSON downloads. The dry run starts only after the scan finds eligible documents.
-- Initial indexing opens the dedicated indexing page with live stage, document count, percentage where available, and the log. Once it finishes, the other dashboard sections are available at separate `/dashboard/…` URLs.
+- Initial indexing opens the dedicated indexing page with live stage, document count, percentage where available, and the log. You can also select **Skip for now** to open `/dashboard` and start initial indexing later from `/dashboard/indexing`. The dashboard sections have separate `/dashboard/…` URLs.
 - After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.
 - Use the dashboard to manage services and schedule incremental indexing.
 - Persistent Docker volumes retain documents, settings, indexing state, the model cache, Qdrant data, and the agent connection across container updates.

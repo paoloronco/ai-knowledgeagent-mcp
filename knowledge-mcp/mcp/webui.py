@@ -39,6 +39,8 @@ DEFAULT_POLICY = ROOT / "mcp" / "index-policy.yaml"
 HTML = Path(__file__).with_name("webui.html")
 SCRIPT = Path(__file__).with_name("app.js")
 TOKEN = secrets.token_urlsafe(32)
+SETUP_PATHS = ("/setup/login", "/setup/health", "/setup/folders", "/setup/policy", "/setup/eligible", "/setup/dry-run", "/setup/indexing")
+DASHBOARD_PATHS = ("/dashboard", "/dashboard/indexing", "/dashboard/services", "/dashboard/folders", "/dashboard/policy", "/dashboard/access")
 
 
 def validate_source_root(value):
@@ -161,7 +163,7 @@ class Controller:
             tmp.replace(POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
-        self.config = {"source_selection": "auto", "source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "scan_requested_revision": -1, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "setup_step": 0 if first_start else 7, "setup_flow_version": 2}
+        self.config = {"source_selection": "auto", "source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "scan_requested_revision": -1, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "initial_index_skipped": False, "setup_step": 0 if first_start else 7, "setup_flow_version": 2}
         migrated = False
         if CONFIG.exists():
             stored = json.loads(CONFIG.read_text(encoding="utf-8"))
@@ -252,6 +254,19 @@ class Controller:
                 raise ValueError("Complete the dry-run test before indexing")
             self.config["onboarding_complete"] = True
             self.config["setup_step"] = max(self.config["setup_step"], 6)
+            self._save()
+
+    def skip_initial_index(self):
+        with self.lock:
+            if self.config["setup_step"] < 6:
+                raise ValueError("Complete the dry-run test before skipping initial indexing")
+            if self.config["onboarding_complete"] and not self.config["initial_index_skipped"]:
+                raise ValueError("Initial indexing setup is already complete")
+            if self.ingest and self.ingest.poll() is None:
+                raise ValueError("Wait until indexing finishes")
+            self.config["onboarding_complete"] = True
+            self.config["initial_index_skipped"] = True
+            self.config["setup_step"] = 7
             self._save()
 
     def advance_setup(self, step):
@@ -749,6 +764,7 @@ class Controller:
             self.last_result = {"exit_code": code, "dry_run": dry_run, "finished_at": time.time()}
             if code == 0 and not dry_run and self.config["setup_step"] >= 6:
                 self.config["setup_step"] = 7
+                self.config["initial_index_skipped"] = False
                 self._save()
             result_file = DATA / "last-result.json"
             tmp = result_file.with_suffix(".tmp")
@@ -944,7 +960,7 @@ class Handler(BaseHTTPRequestHandler):
             status = controller.status()
             self.send(200 if status["app_ready"] and status["qdrant_ready"] else 503, json.dumps({"app_ready": status["app_ready"], "qdrant_ready": status["qdrant_ready"], "mcp_running": status["mcp_running"]}))
             return
-        if self.path == "/" or self.path in ("/dashboard/indexing", "/dashboard/services", "/dashboard/folders", "/dashboard/policy", "/dashboard/access"):
+        if self.path == "/" or self.path in SETUP_PATHS or self.path in DASHBOARD_PATHS:
             token = TOKEN if self._authenticated() else ""
             self.send(200, HTML.read_text(encoding="utf-8").replace("__TOKEN__", token), "text/html; charset=utf-8")
             return
@@ -1083,6 +1099,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/onboarding":
                 controller.complete_onboarding()
                 result = {"complete": True}
+            elif self.path == "/api/onboarding/skip-index":
+                controller.skip_initial_index()
+                result = {"complete": True, "initial_index_skipped": True}
             elif self.path == "/api/onboarding/progress":
                 result = controller.advance_setup(values.get("step"))
             elif self.path == "/api/service":

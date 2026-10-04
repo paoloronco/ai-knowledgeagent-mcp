@@ -2,6 +2,8 @@ const $ = id => document.getElementById(id);
 let current = null, policy = null, wizardStep = 0, authRequired = false, folderPaths = [], eligibleFiles = [];
 let messageTimer = null, refreshError = null;
 const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
+const setupPaths = ['/setup/login', '/setup/health', '/setup/folders', '/setup/policy', '/setup/eligible', '/setup/dry-run', '/setup/indexing'];
+const dashboardPages = ['overview', 'indexing', 'services', 'folders', 'policy', 'access'];
 
 async function api(path, data) {
   const options = data === undefined ? {} : {
@@ -40,8 +42,9 @@ function renderSetupProgress(status) {
   }
   if (done === 6 && status.config.onboarding_complete && !status.index_running && status.last_result && !status.last_result.dry_run && status.last_result.exit_code !== 0) $('wizard-progress').textContent = 'Initial indexing failed · review the log and retry';
 }
-function showStep(step) {
+function showStep(step, push = true) {
   wizardStep = Math.max(0, Math.min(6, step));
+  if (push && location.pathname !== setupPaths[wizardStep]) history.pushState({}, '', setupPaths[wizardStep]);
   document.querySelectorAll('.step').forEach(el => el.classList.toggle('active', Number(el.dataset.step) === wizardStep));
   if (current) renderSetupProgress(current);
   const list = $('setup-steps'), item = list.children[wizardStep];
@@ -170,10 +173,13 @@ async function setupSecurity() {
       const password = $('setup-password').value;
       if (!authRequired || password) {
         await api('/api/security', {enabled: true, password});
+        history.replaceState({}, '', setupPaths[1]);
         location.reload(); return;
       }
     } else if (authRequired) {
       await api('/api/security', {enabled: false});
+      await api('/api/onboarding/progress', {step: 1});
+      history.replaceState({}, '', setupPaths[1]);
       location.reload(); return;
     }
     await nextStep();
@@ -230,15 +236,38 @@ async function startInitialIndex() {
     message('Indexing started. Progress is shown here.'); await refresh();
   } catch (e) { message(e.message, true); }
 }
+async function skipInitialIndex() {
+  try {
+    await api('/api/onboarding/skip-index', {});
+    goDashboardPage('overview', true);
+    message('Initial indexing postponed. Start it later from Indexing.');
+    await refresh();
+  } catch (e) { message(e.message, true); }
+}
+function dashboardPath(page) { return page === 'overview' ? '/dashboard' : '/dashboard/' + page; }
 function goDashboardPage(page, push = false) {
-  const valid = ['indexing', 'services', 'folders', 'policy', 'access'];
-  const chosen = valid.includes(page) ? page : 'indexing';
-  if (push && location.pathname !== '/dashboard/' + chosen) history.pushState({}, '', '/dashboard/' + chosen);
+  const chosen = dashboardPages.includes(page) ? page : 'overview';
+  if (push && location.pathname !== dashboardPath(chosen)) history.pushState({}, '', dashboardPath(chosen));
   for (const panel of document.querySelectorAll('.dashboard-panel')) panel.classList.toggle('active', panel.dataset.page === chosen);
   for (const link of document.querySelectorAll('[data-nav-page]')) link.classList.toggle('active', link.dataset.navPage === chosen);
 }
+function syncRoute(status) {
+  if (!status.config.onboarding_complete) {
+    const available = Math.max(0, Math.min(6, status.config.setup_step || 0));
+    const requested = setupPaths.indexOf(location.pathname);
+    const step = requested < 0 ? available : Math.min(requested, available);
+    if (location.pathname !== setupPaths[step]) history.replaceState({}, '', setupPaths[step]);
+    showStep(step, false);
+    return;
+  }
+  const pending = status.config.setup_step < 7;
+  const requested = location.pathname === '/dashboard' ? 'overview' : location.pathname.startsWith('/dashboard/') ? location.pathname.slice('/dashboard/'.length) : '';
+  const page = pending ? 'indexing' : dashboardPages.includes(requested) ? requested : 'overview';
+  if (location.pathname !== dashboardPath(page)) history.replaceState({}, '', dashboardPath(page));
+  goDashboardPage(page);
+}
 function renderIndexProgress(s) {
-  const progress = s.index_progress, bar = $('index-progress');
+  const progress = s.config.initial_index_skipped && !s.index_running && s.last_result?.dry_run ? null : s.index_progress, bar = $('index-progress');
   if (!progress) { bar.classList.add('hidden'); $('index-progress-label').textContent = s.index_running ? 'Starting…' : ''; return; }
   const stages = {discovering: 'Discovering eligible documents', hashing: 'Calculating file hashes', dry_run: 'Testing document parsing', loading_model: 'Loading the embedding model', indexing: 'Indexing documents', complete: 'Completed'};
   const stage = stages[progress.stage] || progress.stage;
@@ -251,21 +280,25 @@ function renderIndexProgress(s) {
 async function refresh() {
   try {
     const s = await api('/api/status'); current = s;
+    syncRoute(s);
     renderSetupProgress(s);
     renderScanStatus(s);
     renderIndexProgress(s);
     $('health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready), ...(s.config.source_mode === 'host_agent' ? [badge('Host agent', s.agent_connected)] : []));
+    $('overview-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), badge('MCP', s.mcp_running), badge('Documents', s.source_ready));
     $('wizard-health').replaceChildren(badge('App', s.app_ready), badge('Qdrant', s.qdrant_ready), ...(s.agent_managed ? [badge('Host agent', s.agent_connected)] : []));
     $('source-root').textContent = 'Document root: ' + (s.config.source_mode === 'host_agent' ? s.config.host_root : s.source_root);
     const syncState = s.agent_error ? 'Host sync failed: ' + s.agent_error : !s.agent_connected ? s.agent_managed ? 'Automatic host agent unavailable' : 'Host folder access is not configured' : s.agent_syncing ? 'Syncing documents…' : s.agent_synced ? 'Host documents synchronized' : 'Waiting for host sync';
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
-    $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} ${s.last_result.exit_code === 0 ? 'completed' : 'failed'} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
+    $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.config.initial_index_skipped && (!s.last_result || s.last_result.dry_run) ? 'Initial indexing has not run yet.' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} ${s.last_result.exit_code === 0 ? 'completed' : 'failed'} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
+    $('overview-state').textContent = s.index_running ? 'Indexing is in progress. Open Indexing to follow it.' : s.config.initial_index_skipped && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Initial indexing failed. Open Indexing to review the log and retry.' : s.config.initial_index_skipped ? 'Initial indexing was postponed. Your documents will be searchable after you run it.' : s.config.setup_step < 7 ? 'Initial indexing is pending.' : 'Setup is complete. Use the sections below to manage your documents and services.';
     const readyForMcp = !s.index_running && s.last_result && !s.last_result.dry_run && s.last_result.exit_code === 0 && s.qdrant_ready;
     $('start-after-index').disabled = !readyForMcp || s.mcp_running;
     $('mcp-guidance').textContent = s.index_running ? 'Wait for indexing to finish before starting MCP.' : readyForMcp && !s.mcp_running ? 'Indexing is complete. You can start MCP.' : s.mcp_running ? 'MCP is running.' : '';
     $('log').textContent = s.log || 'No run yet.'; $('setup-log').textContent = s.log || 'No run yet.';
     $('dry').disabled = s.index_running; $('run').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
+    $('run').textContent = s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
     document.querySelectorAll('[data-qdrant]').forEach(x => x.disabled = !s.qdrant_managed);
     $('wizard-qdrant').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);
     $('wizard-qdrant').disabled = !s.qdrant_managed;
@@ -275,10 +308,11 @@ async function refresh() {
     else if (s.last_result?.dry_run && !s.index_running) $('dry-result').textContent = s.last_result.exit_code === 0 ? 'Dry run passed. You can continue to indexing.' : 'Dry run failed. Review the log and retry.';
     $('dry-next').disabled = !(s.last_result?.dry_run && !s.index_running && s.last_result.exit_code === 0);
     $('dry-run-button').disabled = s.index_running;
+    $('initial-index-button').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
+    $('skip-initial-index').disabled = s.index_running;
     $('wizard').classList.toggle('hidden', s.config.onboarding_complete); $('dashboard').classList.toggle('hidden', !s.config.onboarding_complete);
     $('setup-progress-card').classList.toggle('hidden', s.config.onboarding_complete);
     $('dashboard-nav').classList.toggle('hidden', s.config.setup_step < 7);
-    if (s.config.onboarding_complete) goDashboardPage(s.config.setup_step < 7 ? 'indexing' : location.pathname.split('/').pop());
     refreshError = null;
   } catch (e) {
     if (refreshError !== e.message) message(e.message, true);
@@ -297,12 +331,20 @@ async function start() {
     fillSourceInputs();
     $('interval').value = current.config.interval_hours;
     await loadPolicy();
-    showStep(Math.min(6, current.config.setup_step || 0)); await refresh(); setInterval(refresh, 3000);
+    syncRoute(current); await refresh(); setInterval(refresh, 3000);
   } catch (e) { message(e.message, true); }
 }
 if (typeof window !== 'undefined') {
-  window.addEventListener('popstate', () => { if (current?.config.onboarding_complete) goDashboardPage(location.pathname.split('/').pop()); });
+  window.addEventListener('popstate', () => { if (current) syncRoute(current); });
   document.addEventListener('click', event => {
+    const setupLink = event.target.closest?.('[data-setup-step]');
+    if (setupLink && current && !current.config.onboarding_complete) {
+      event.preventDefault();
+      const step = Number(setupLink.dataset.setupStep);
+      if (step <= current.config.setup_step) showStep(step);
+      else message('Complete the previous setup step first.', true);
+      return;
+    }
     const link = event.target.closest?.('[data-nav-page]');
     if (!link) return;
     event.preventDefault(); goDashboardPage(link.dataset.navPage, true);

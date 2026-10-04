@@ -41,6 +41,10 @@ class AdminBoundaryTest(unittest.TestCase):
                     thread.start()
                     try:
                         url = f"http://127.0.0.1:{server.server_port}"
+                        for route in (*app.SETUP_PATHS, *app.DASHBOARD_PATHS):
+                            with urllib.request.urlopen(url + route) as response:
+                                self.assertEqual(response.status, 200)
+                                self.assertIn(b"Knowledge MCP", response.read())
 
                         def post(route, body, cookie=""):
                             headers = {"Content-Type": "application/json", "X-Control-Token": app.TOKEN}
@@ -186,6 +190,32 @@ class AdminBoundaryTest(unittest.TestCase):
                 controller.close()
                 restored = app.Controller()
                 self.assertEqual(restored.config["setup_step"], 7)
+                restored.close()
+
+    def test_initial_index_can_be_postponed_and_started_later(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            source = data / "documents"
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", source),
+                patch.object(app, "MANAGED_SOURCE", source), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
+                patch.object(app, "AUTH", data / "auth.json"), patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+            ):
+                controller = app.Controller()
+                with self.assertRaisesRegex(ValueError, "dry-run test"):
+                    controller.skip_initial_index()
+                controller.config["setup_step"] = 6
+                controller._save()
+                controller.skip_initial_index()
+                self.assertTrue(controller.config["onboarding_complete"])
+                self.assertTrue(controller.config["initial_index_skipped"])
+                self.assertEqual(controller.config["setup_step"], 7)
+                controller.close()
+                restored = app.Controller()
+                self.assertTrue(restored.config["initial_index_skipped"])
+                restored._finish_index(Mock(wait=lambda: 0), False)
+                self.assertFalse(restored.config["initial_index_skipped"])
                 restored.close()
 
     def test_managed_source_is_created_on_first_start(self):

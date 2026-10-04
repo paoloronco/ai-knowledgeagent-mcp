@@ -8,7 +8,7 @@ const ui = path.join(__dirname, '../knowledge-mcp/mcp');
 const script = fs.readFileSync(path.join(ui, 'app.js'), 'utf8').replace(/start\(\);\s*$/, '');
 const html = fs.readFileSync(path.join(ui, 'webui.html'), 'utf8');
 
-function dashboard(config, connected = false) {
+function dashboard(config, connected = false, pathname = '/dashboard/indexing') {
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, {
     value: '', textContent: '', children: [], open: false, disabled: false,
     classList: {
@@ -23,16 +23,17 @@ function dashboard(config, connected = false) {
   const makeClassList = () => ({classes: new Set(), toggle(name, force) { if (force) this.classes.add(name); else this.classes.delete(name); }, contains(name) { return this.classes.has(name); }});
   const panels = [...html.matchAll(/class="card dashboard-panel" data-page="([^"]+)"/g)].map(([, page]) => ({dataset: {page}, classList: makeClassList()}));
   const links = [...html.matchAll(/data-nav-page="([^"]+)"/g)].map(([, navPage]) => ({dataset: {navPage}, classList: makeClassList()}));
+  const steps = [...html.matchAll(/class="step" data-step="([^"]+)"/g)].map(([, step]) => ({dataset: {step}, classList: makeClassList()}));
   const initialRoot = config.source_mode === 'host_agent' ? config.host_root : config.source_root;
   const status = {config: {sync_request: 0, ...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected, agent_managed: true,
     source_ready: connected || config.source_mode === 'container', agent_file_count: 2, agent_sync_request_completed: 1,
     scan_complete: false, scan_ready: false, scan_running: false, scan_checked: 0, scan_eligible_count: 0, scan_eligible_preview: [],
     document_paths: initialRoot ? [initialRoot] : []};
-  const location = {pathname: '/dashboard/indexing'};
+  const location = {pathname};
   const context = vm.createContext({
-    document: {getElementById: id => elements[id] || null, querySelectorAll: selector => selector === '.dashboard-panel' ? panels : selector === '[data-nav-page]' ? links : [],
+    document: {getElementById: id => elements[id] || null, querySelectorAll: selector => selector === '.dashboard-panel' ? panels : selector === '[data-nav-page]' ? links : selector === '.step' ? steps : [],
       createElement: () => ({className: '', textContent: '', children: [], append(...nodes) { this.children.push(...nodes); }, setAttribute() {}}), activeElement: null},
-    token: 'test-control-token', Date, clearTimeout() {}, location, history: {pushState(_, __, url) { location.pathname = url; }},
+    token: 'test-control-token', Date, clearTimeout() {}, location, history: {pushState(_, __, url) { location.pathname = url; }, replaceState(_, __, url) { location.pathname = url; }},
     setTimeout(callback, delay) { if (delay === 2000) callback(); },
     async fetch(route, options) {
       const body = options?.body ? JSON.parse(options.body) : null;
@@ -50,6 +51,11 @@ function dashboard(config, connected = false) {
       else if (route === '/api/agent/refresh') result = {sync_request: 1};
       else if (route === '/api/scan') result = {requested: true};
       else if (route === '/api/onboarding/progress') result = {setup_step: body.step};
+      else if (route === '/api/onboarding/skip-index') {
+        status.config = {...status.config, onboarding_complete: true, setup_step: 7, initial_index_skipped: true};
+        result = {complete: true, initial_index_skipped: true};
+      }
+      else if (route === '/api/index') result = {started: true};
       else throw Error('Unexpected request: ' + route);
       return {ok: true, json: async () => result};
     }
@@ -57,7 +63,7 @@ function dashboard(config, connected = false) {
   vm.runInContext(script, context);
   context.initial = status;
   vm.runInContext('current = initial; wizardStep = 2; fillSourceInputs();', context);
-  return {elements, calls, context, status, panels, links, location};
+  return {elements, calls, context, status, panels, links, steps, location};
 }
 
 const legacy = {source_selection: 'auto', source_mode: 'host_agent', source_root: '/data/host-documents', host_root: '', setup_step: 2, folders: []};
@@ -191,4 +197,35 @@ test('indexing progress is visible alone until initial indexing finishes', async
   vm.runInContext("goDashboardPage('services', true)", context);
   assert.equal(location.pathname, '/dashboard/services');
   assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'services');
+});
+
+test('setup routes can be opened directly and navigation updates the URL', () => {
+  const {context, location, steps} = dashboard({...legacy, setup_step: 3}, false, '/setup/health');
+  vm.runInContext('syncRoute(current)', context);
+  assert.equal(location.pathname, '/setup/health');
+  assert.equal(steps.find(x => x.classList.contains('active')).dataset.step, '1');
+  vm.runInContext('showStep(2)', context);
+  assert.equal(location.pathname, '/setup/folders');
+  vm.runInContext('backStep()', context);
+  assert.equal(location.pathname, '/setup/health');
+  location.pathname = '/setup/indexing';
+  vm.runInContext('syncRoute(current)', context);
+  assert.equal(location.pathname, '/setup/policy');
+  assert.equal(steps.find(x => x.classList.contains('active')).dataset.step, '3');
+});
+
+test('skipping initial indexing opens the dashboard and keeps indexing available', async () => {
+  const {elements, calls, context, status, panels, location} = dashboard({...legacy, setup_step: 6}, true, '/setup/indexing');
+  await vm.runInContext('skipInitialIndex()', context);
+  assert.equal(calls.some(x => x.route === '/api/onboarding/skip-index'), true);
+  assert.equal(location.pathname, '/dashboard');
+  assert.equal(status.config.initial_index_skipped, true);
+  assert.equal(elements['dashboard-nav'].classList.contains('hidden'), false);
+  assert.equal(panels.find(x => x.classList.contains('active')).dataset.page, 'overview');
+  assert.match(elements['overview-state'].textContent, /postponed/);
+  vm.runInContext("goDashboardPage('indexing', true)", context);
+  assert.equal(location.pathname, '/dashboard/indexing');
+  assert.equal(elements['run'].textContent, 'Start initial indexing');
+  await vm.runInContext('runIndex(false)', context);
+  assert.equal(calls.some(x => x.route === '/api/index' && x.body.dry_run === false), true);
 });
