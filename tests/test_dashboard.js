@@ -103,11 +103,11 @@ test('GPU status cards distinguish acceleration, CPU fallback and unavailable CU
   status.embedding_device_preference = 'auto';
   await vm.runInContext('refresh()', context);
   assert.match(visibleText(elements['overview-gpu-status']), /Driver 617\.14/);
-  assert.match(visibleText(elements['index-gpu-status']), /GPU acceleration active/);
+  assert.match(visibleText(elements['index-gpu-status']), /GPU embeddings Active/);
   assert.match(elements['wizard-gpu-status'].className, /gpu-status-ready/);
   status.gpu = {...status.gpu, usable: false, cuda_runtime: null, reason: 'This image has CPU-only PyTorch.'};
   await vm.runInContext('refresh()', context);
-  assert.match(visibleText(elements['overview-gpu-status']), /GPU detected · CPU mode/);
+  assert.match(visibleText(elements['overview-gpu-status']), /CPU embeddings GPU unavailable/);
   assert.match(visibleText(elements['overview-gpu-status']), /CPU-only PyTorch/);
   status.embedding_device_preference = 'cuda';
   await vm.runInContext('refresh()', context);
@@ -115,12 +115,21 @@ test('GPU status cards distinguish acceleration, CPU fallback and unavailable CU
   assert.match(elements['overview-gpu-status'].className, /gpu-status-warning/);
   status.embedding_device_preference = 'cpu';
   await vm.runInContext('refresh()', context);
-  assert.match(visibleText(elements['overview-gpu-status']), /CPU mode selected/);
+  assert.match(visibleText(elements['overview-gpu-status']), /CPU embeddings Selected/);
   status.embedding_device_preference = 'auto';
   status.gpu = {checking: false, detected: false, usable: false, devices: [], reason: 'No NVIDIA GPU is exposed to the application container.'};
   await vm.runInContext('refresh()', context);
-  assert.match(visibleText(elements['overview-gpu-status']), /No NVIDIA GPU is available to this container/);
-  assert.match(visibleText(elements['overview-gpu-status']), /Embeddings run on CPU/);
+  assert.match(visibleText(elements['overview-gpu-status']), /CPU embeddings Active/);
+  assert.match(visibleText(elements['overview-gpu-status']), /No NVIDIA GPU available in this container/);
+});
+
+test('indexing guidance is concise with technical details in accessible tooltips', () => {
+  assert.match(html, /Choose the model that fits your documents and hardware/);
+  assert.match(html, /Incremental updates process only changes/);
+  assert.match(html, /aria-describedby="model-help"/);
+  assert.match(html, /aria-describedby="index-help"/);
+  assert.match(html, /\.info-tip:hover \.info-popover,\.info-tip:focus-within \.info-popover/);
+  assert.equal(html.includes('Each run compares file hashes.'), false);
 });
 
 test('indexing errors show the affected file, retry action, downloads and ignore option', async () => {

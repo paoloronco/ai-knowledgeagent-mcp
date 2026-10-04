@@ -406,24 +406,22 @@ function renderGpuStatus(s) {
   const gpu = s.gpu || {checking: true};
   const devices = gpu.devices || [];
   const preference = s.embedding_device_preference || 'auto';
-  let tone = 'cpu', title = 'CPU mode', badge = 'CPU', description = '';
+  let tone = 'cpu', title = 'CPU embeddings', badge = 'Active', description = '';
   if (gpu.checking) {
     tone = 'checking'; title = 'Checking hardware'; badge = 'Checking';
-    description = 'Detecting NVIDIA GPU availability.';
   } else if (preference === 'cuda' && !gpu.usable) {
     tone = 'warning'; title = 'GPU unavailable'; badge = 'Action needed';
     description = gpu.reason || 'CUDA was requested, but GPU acceleration is unavailable.';
   } else if (gpu.usable && preference !== 'cpu') {
-    tone = 'ready'; title = 'GPU acceleration active'; badge = 'GPU';
-    description = 'Embeddings run on the NVIDIA GPU.';
+    tone = 'ready'; title = 'GPU embeddings'; badge = 'Active';
   } else if (preference === 'cpu') {
-    title = 'CPU mode selected';
-    description = devices.length ? 'Embeddings are set to CPU even though a GPU is detected.' : 'Embeddings are set to CPU.';
+    badge = 'Selected';
+    description = devices.length ? 'GPU detected; CPU selected in settings.' : '';
   } else if (devices.length) {
-    title = 'GPU detected · CPU mode';
-    description = gpu.reason || 'GPU acceleration is unavailable; embeddings run on CPU.';
+    badge = 'GPU unavailable';
+    description = gpu.reason || 'GPU acceleration is unavailable.';
   } else {
-    description = 'No NVIDIA GPU is available to this container. Embeddings run on CPU.';
+    description = 'No NVIDIA GPU available in this container.';
   }
   const details = devices.map(item => {
     const parts = [item.name];
@@ -449,10 +447,13 @@ function renderGpuStatus(s) {
     badgeNode.className = 'gpu-status-badge';
     badgeNode.textContent = badge;
     heading.append(titleNode, badgeNode);
-    const summary = document.createElement('p');
-    summary.className = 'gpu-status-description';
-    summary.textContent = description;
-    body.append(heading, summary);
+    body.append(heading);
+    if (description) {
+      const summary = document.createElement('p');
+      summary.className = 'gpu-status-description';
+      summary.textContent = description;
+      body.append(summary);
+    }
     if (details.length) {
       const specs = document.createElement('div');
       specs.className = 'gpu-status-details';
