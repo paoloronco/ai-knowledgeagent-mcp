@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const ui = path.join(__dirname, '../knowledge-mcp/mcp');
 const script = fs.readFileSync(path.join(ui, 'app.js'), 'utf8').replace(/start\(\);\s*$/, '');
 const html = fs.readFileSync(path.join(ui, 'webui.html'), 'utf8');
+const visibleText = node => [node.textContent, ...(node.children || []).map(visibleText)].join(' ');
 
 function dashboard(config, connected = false, pathname = '/dashboard/indexing') {
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, {
@@ -88,22 +89,32 @@ test('model choice shows hardware guidance and keeps active search until indexin
   assert.equal(elements.run.textContent, 'Index with selected model');
 });
 
-test('dashboard reports NVIDIA driver and the actual embedding device', async () => {
+test('GPU status cards distinguish acceleration, CPU fallback and unavailable CUDA', async () => {
   const {elements, context, status} = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
   status.gpu = {checking: false, detected: true, usable: true, cuda_runtime: '12.6', reason: 'CUDA ready.', devices: [
     {name: 'NVIDIA GeForce RTX 3070', driver: '617.14', memory_free_mb: 4720, memory_total_mb: 8192}
   ]};
   status.embedding_device_preference = 'auto';
   await vm.runInContext('refresh()', context);
-  assert.match(elements['overview-gpu-status'].textContent, /driver 617\.14/);
-  assert.match(elements['index-gpu-status'].textContent, /Embeddings: GPU/);
+  assert.match(visibleText(elements['overview-gpu-status']), /Driver 617\.14/);
+  assert.match(visibleText(elements['index-gpu-status']), /GPU acceleration active/);
+  assert.match(elements['wizard-gpu-status'].className, /gpu-status-ready/);
   status.gpu = {...status.gpu, usable: false, cuda_runtime: null, reason: 'This image has CPU-only PyTorch.'};
   await vm.runInContext('refresh()', context);
-  assert.match(elements['overview-gpu-status'].textContent, /Embeddings: CPU/);
-  assert.match(elements['overview-gpu-status'].textContent, /CPU-only PyTorch/);
+  assert.match(visibleText(elements['overview-gpu-status']), /GPU detected · CPU mode/);
+  assert.match(visibleText(elements['overview-gpu-status']), /CPU-only PyTorch/);
   status.embedding_device_preference = 'cuda';
   await vm.runInContext('refresh()', context);
-  assert.match(elements['overview-gpu-status'].textContent, /Embeddings: unavailable/);
+  assert.match(visibleText(elements['overview-gpu-status']), /GPU unavailable/);
+  assert.match(elements['overview-gpu-status'].className, /gpu-status-warning/);
+  status.embedding_device_preference = 'cpu';
+  await vm.runInContext('refresh()', context);
+  assert.match(visibleText(elements['overview-gpu-status']), /CPU mode selected/);
+  status.embedding_device_preference = 'auto';
+  status.gpu = {checking: false, detected: false, usable: false, devices: [], reason: 'No NVIDIA GPU is exposed to the application container.'};
+  await vm.runInContext('refresh()', context);
+  assert.match(visibleText(elements['overview-gpu-status']), /No NVIDIA GPU is available to this container/);
+  assert.match(visibleText(elements['overview-gpu-status']), /Embeddings run on CPU/);
 });
 
 test('indexing errors show the affected file, retry action, downloads and ignore option', async () => {

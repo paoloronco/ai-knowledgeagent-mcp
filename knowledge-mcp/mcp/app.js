@@ -371,19 +371,67 @@ function renderIndexProgress(s) {
 }
 function renderGpuStatus(s) {
   const gpu = s.gpu || {checking: true};
-  let status;
-  if (gpu.checking) status = 'Checking GPU…';
-  else {
-    const device = s.embedding_device_preference === 'cuda' && !gpu.usable ? 'unavailable'
-      : gpu.usable && s.embedding_device_preference !== 'cpu' ? 'GPU' : 'CPU';
-    const hardware = gpu.devices?.length
-      ? gpu.devices.map(item => `${item.name} (driver ${item.driver}, ${item.memory_free_mb} / ${item.memory_total_mb} MiB free)`).join('; ')
-      : 'No NVIDIA GPU detected in this container';
-    const runtime = gpu.cuda_runtime ? ` · PyTorch CUDA ${gpu.cuda_runtime}` : '';
-    const override = s.embedding_device_preference === 'cpu' ? ' · CPU selected by EMBEDDING_DEVICE' : s.embedding_device_preference === 'cuda' && !gpu.usable ? ' · CUDA requested but unavailable' : '';
-    status = `${hardware}${runtime} · Embeddings: ${device}${override}. ${gpu.reason || ''}`;
+  const devices = gpu.devices || [];
+  const preference = s.embedding_device_preference || 'auto';
+  let tone = 'cpu', title = 'CPU mode', badge = 'CPU', description = '';
+  if (gpu.checking) {
+    tone = 'checking'; title = 'Checking hardware'; badge = 'Checking';
+    description = 'Detecting NVIDIA GPU availability.';
+  } else if (preference === 'cuda' && !gpu.usable) {
+    tone = 'warning'; title = 'GPU unavailable'; badge = 'Action needed';
+    description = gpu.reason || 'CUDA was requested, but GPU acceleration is unavailable.';
+  } else if (gpu.usable && preference !== 'cpu') {
+    tone = 'ready'; title = 'GPU acceleration active'; badge = 'GPU';
+    description = 'Embeddings run on the NVIDIA GPU.';
+  } else if (preference === 'cpu') {
+    title = 'CPU mode selected';
+    description = devices.length ? 'Embeddings are set to CPU even though a GPU is detected.' : 'Embeddings are set to CPU.';
+  } else if (devices.length) {
+    title = 'GPU detected · CPU mode';
+    description = gpu.reason || 'GPU acceleration is unavailable; embeddings run on CPU.';
+  } else {
+    description = 'No NVIDIA GPU is available to this container. Embeddings run on CPU.';
   }
-  for (const id of ['wizard-gpu-status', 'overview-gpu-status', 'index-gpu-status']) $(id).textContent = status;
+  const details = devices.map(item => {
+    const parts = [item.name];
+    if (item.driver) parts.push(`Driver ${item.driver}`);
+    if (item.memory_total_mb != null) parts.push(`${item.memory_free_mb} / ${item.memory_total_mb} MiB free`);
+    return parts.join(' · ');
+  });
+  if (gpu.cuda_runtime) details.push(`CUDA ${gpu.cuda_runtime}`);
+  for (const id of ['wizard-gpu-status', 'overview-gpu-status', 'index-gpu-status']) {
+    const card = $(id);
+    card.className = `gpu-status gpu-status-${tone}`;
+    const icon = document.createElement('span');
+    icon.className = 'gpu-status-icon';
+    icon.textContent = '▣';
+    icon.setAttribute('aria-hidden', 'true');
+    const body = document.createElement('div');
+    body.className = 'gpu-status-body';
+    const heading = document.createElement('div');
+    heading.className = 'gpu-status-heading';
+    const titleNode = document.createElement('strong');
+    titleNode.textContent = title;
+    const badgeNode = document.createElement('span');
+    badgeNode.className = 'gpu-status-badge';
+    badgeNode.textContent = badge;
+    heading.append(titleNode, badgeNode);
+    const summary = document.createElement('p');
+    summary.className = 'gpu-status-description';
+    summary.textContent = description;
+    body.append(heading, summary);
+    if (details.length) {
+      const specs = document.createElement('div');
+      specs.className = 'gpu-status-details';
+      for (const detail of details) {
+        const item = document.createElement('span');
+        item.textContent = detail;
+        specs.append(item);
+      }
+      body.append(specs);
+    }
+    card.replaceChildren(icon, body);
+  }
 }
 async function refresh() {
   try {
