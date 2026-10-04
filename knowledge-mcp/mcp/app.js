@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 let current = null, policy = null, wizardStep = 0, authRequired = false, folderPaths = [], eligibleFiles = [];
 let messageTimer = null, refreshError = null;
+let modelRenderKey = '';
 const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
 const setupPaths = ['/setup/login', '/setup/health', '/setup/folders', '/setup/policy', '/setup/eligible', '/setup/dry-run', '/setup/indexing'];
 const dashboardPages = ['overview', 'indexing', 'folders', 'policy', 'access'];
@@ -229,6 +230,48 @@ async function runIndex(dry_run) {
   try { await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
   catch (e) { message(e.message, true); }
 }
+async function selectEmbeddingModel(model) {
+  try {
+    await api('/api/embedding-model', {model});
+    message('Model selected. Run indexing to make it searchable.');
+    await refresh();
+  } catch (e) { message(e.message, true); }
+}
+function renderEmbeddingModels(s) {
+  const selected = s.config.embedding_model, active = s.config.active_embedding_model;
+  const key = `${selected}|${active}|${s.index_running}`;
+  if (key === modelRenderKey) return;
+  modelRenderKey = key;
+  for (const target of ['setup-model-options', 'dashboard-model-options']) {
+    const cards = Object.entries(s.embedding_models || {}).map(([id, spec]) => {
+      const card = document.createElement('div'); card.className = 'model-card';
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'model-option' + (selected === id ? ' selected' : '');
+      button.setAttribute('aria-pressed', String(selected === id));
+      button.disabled = s.index_running;
+      button.onclick = () => selectEmbeddingModel(id);
+      const title = document.createElement('strong');
+      title.textContent = spec.name + (id === 'e5-small' ? ' · Recommended' : '');
+      button.append(title);
+      for (const line of [spec.use_case, `${spec.resources} resources · ${spec.speed} · ${spec.dimensions} dimensions`, spec.note]) {
+        const detail = document.createElement('span'); detail.textContent = line; button.append(detail);
+      }
+      const source = document.createElement('a');
+      source.href = spec.url; source.target = '_blank'; source.rel = 'noopener noreferrer';
+      source.textContent = 'Official model card';
+      card.append(button, source);
+      return card;
+    });
+    $(target).replaceChildren(...cards);
+  }
+  const name = id => s.embedding_models?.[id]?.name || (id === 'environment' ? 'Custom environment model' : 'None');
+  const state = active && active !== selected
+    ? `Search currently uses ${name(active)}. ${name(selected)} has a separate index and becomes searchable after a successful indexing run. Both indexes use disk space.`
+    : active ? `Search uses ${name(active)}. Changing models keeps this index until the new one is ready.`
+      : `Selected: ${name(selected)}. Search becomes available after indexing completes.`;
+  $('setup-model-state').textContent = state;
+  $('dashboard-model-state').textContent = state;
+}
 async function startInitialIndex() {
   try {
     await api('/api/index', {dry_run: false}); await api('/api/onboarding', {});
@@ -280,6 +323,7 @@ function renderIndexProgress(s) {
 async function refresh() {
   try {
     const s = await api('/api/status'); current = s;
+    renderEmbeddingModels(s);
     syncRoute(s);
     renderSetupProgress(s);
     renderScanStatus(s);
@@ -295,7 +339,7 @@ async function refresh() {
     $('overview-open-indexing').classList.toggle('hidden', !s.index_running && !s.config.initial_index_skipped);
     $('log').textContent = s.log || 'No run yet.'; $('setup-log').textContent = s.log || 'No run yet.';
     $('dry').disabled = s.index_running; $('run').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
-    $('run').textContent = s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
+    $('run').textContent = s.config.active_embedding_model && s.config.active_embedding_model !== s.config.embedding_model ? 'Index with selected model' : s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
     document.querySelectorAll('[data-qdrant]').forEach(x => x.disabled = !s.qdrant_managed);
     $('dashboard-qdrant-start').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);
     $('wizard-qdrant').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);

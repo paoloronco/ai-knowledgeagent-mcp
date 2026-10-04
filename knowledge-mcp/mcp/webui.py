@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import yaml
 from host_sync import allowed_file, host_root, relative_path
+from embedding_models import DEFAULT_MODEL, MODELS
 from policy_defaults import ensure_required_exclusions, remove_legacy_default_exclusions
 
 
@@ -163,14 +164,22 @@ class Controller:
             tmp.replace(POLICY)
         self.lock = threading.RLock()
         first_start = not CONFIG.exists()
-        self.config = {"source_selection": "auto", "source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "scan_requested_revision": -1, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "initial_index_skipped": False, "setup_step": 0 if first_start else 7, "setup_flow_version": 2}
+        environment_model = next((key for key, spec in MODELS.items() if spec["model"] == os.getenv("MODEL_NAME", MODELS[DEFAULT_MODEL]["model"]) and spec["collection"] == os.getenv("DENSE_COLLECTION", "documents")), "environment")
+        self.config = {"source_selection": "auto", "source_mode": "host_agent" if first_start else "container", "host_root": "", "sync_revision": 0, "sync_request": 0, "scan_requested_revision": -1, "source_root": str(HOST_SOURCE if first_start else SOURCE), "folders": [""], "interval_hours": 0, "mcp_enabled": False, "qdrant_enabled": True, "last_run_at": 0, "onboarding_complete": not first_start, "initial_index_skipped": False, "setup_step": 0 if first_start else 7, "setup_flow_version": 2, "embedding_model": environment_model, "active_embedding_model": None, "legacy_embedding_model": environment_model}
         migrated = False
         if CONFIG.exists():
             stored = json.loads(CONFIG.read_text(encoding="utf-8"))
             self.config.update(stored)
+            if "embedding_model" not in stored:
+                self.config["embedding_model"] = environment_model
+                self.config["active_embedding_model"] = environment_model if stored.get("setup_step", 7) >= 7 and not stored.get("initial_index_skipped", False) else None
+                migrated = True
+            if "legacy_embedding_model" not in stored:
+                self.config["legacy_embedding_model"] = environment_model
+                migrated = True
             if "setup_step" not in stored and not self.config["onboarding_complete"]:
                 self.config["setup_step"] = 1 if AUTH.exists() else 0
-            migrated = "folders" not in stored or "source_selection" not in stored or "setup_flow_version" not in stored
+            migrated = migrated or "folders" not in stored or "source_selection" not in stored or "setup_flow_version" not in stored
             if "setup_flow_version" not in stored:
                 previous_step = self.config["setup_step"]
                 if self.config["onboarding_complete"]:
@@ -209,6 +218,7 @@ class Controller:
         self.mcp = None
         self.ingest = None
         self.ingest_dry_run = False
+        self.ingest_model = None
         self.ingest_finalized = False
         result_file = DATA / "last-result.json"
         self.last_result = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else None
@@ -293,8 +303,28 @@ class Controller:
             self.last_result = None
             (DATA / "last-result.json").unlink(missing_ok=True)
 
-    def _env(self):
-        return {**os.environ, "KNOWLEDGE_ROOT": self.config["source_root"], "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY), "INGEST_PROGRESS_FILE": str(DATA / "index-progress.json")}
+    def _env(self, model_id=None, indexing=False):
+        env = {**os.environ, "KNOWLEDGE_ROOT": self.config["source_root"], "INDEX_SOURCE_PATHS": json.dumps(self.config["folders"]), "POLICY_FILE": str(POLICY), "INGEST_PROGRESS_FILE": str(DATA / "index-progress.json")}
+        chosen = model_id or self.config["active_embedding_model"] or self.config["embedding_model"]
+        if chosen in MODELS:
+            spec = MODELS[chosen]
+            env.update(MODEL_NAME=spec["model"], DENSE_COLLECTION=spec["collection"])
+            if indexing:
+                env.setdefault("EMBED_BATCH_SIZE", str(spec["batch_size"]))
+            if indexing and chosen != self.config["legacy_embedding_model"]:
+                base = Path(os.getenv("INGESTION_BASE_DIR", str(ROOT / ".state")))
+                env["INGESTION_BASE_DIR"] = str(base / "models" / chosen)
+        return env
+
+    def select_embedding_model(self, model_id):
+        if model_id not in MODELS:
+            raise ValueError("Choose a supported embedding model")
+        with self.lock:
+            if self.ingest and self.ingest.poll() is None:
+                raise ValueError("Wait until indexing finishes before changing the model")
+            self.config["embedding_model"] = model_id
+            self._save()
+            return dict(self.config)
 
     def agent_pair(self):
         token = secrets.token_urlsafe(48)
@@ -745,16 +775,17 @@ class Controller:
             args = [sys.executable, "ingestion/ingest.py"]
             if dry_run:
                 args += ["--dry-run", "--limit", "10"]
+            self.ingest_model = self.config["embedding_model"]
             with (DATA / "ingest.log").open("w", encoding="utf-8") as log:
-                self.ingest = subprocess.Popen(args, cwd=ROOT, env=self._env(), stdout=log, stderr=subprocess.STDOUT)
+                self.ingest = subprocess.Popen(args, cwd=ROOT, env=self._env(self.ingest_model, indexing=True), stdout=log, stderr=subprocess.STDOUT)
             self.ingest_dry_run = dry_run
             self.ingest_finalized = False
             if not dry_run:
                 self.config["last_run_at"] = time.time()
                 self._save()
-            threading.Thread(target=self._finish_index, args=(self.ingest, dry_run), daemon=True).start()
+            threading.Thread(target=self._finish_index, args=(self.ingest, dry_run, self.ingest_model), daemon=True).start()
 
-    def _finish_index(self, process, dry_run):
+    def _finish_index(self, process, dry_run, model_id=None):
         code = process.wait()
         with self.lock:
             if self.ingest is process and self.ingest_finalized:
@@ -762,6 +793,9 @@ class Controller:
             if self.ingest is process:
                 self.ingest_finalized = True
             self.last_result = {"exit_code": code, "dry_run": dry_run, "finished_at": time.time()}
+            if code == 0 and not dry_run:
+                self.config["active_embedding_model"] = model_id or self.ingest_model or self.config["embedding_model"]
+                self._save()
             if code == 0 and not dry_run and self.config["setup_step"] >= 6:
                 self.config["setup_step"] = 7
                 self.config["initial_index_skipped"] = False
@@ -853,6 +887,7 @@ class Controller:
                     tail = output.read().decode("utf-8", errors="replace")
             return {
                 "config": dict(self.config),
+                "embedding_models": MODELS,
                 "document_paths": document_paths(self.config),
                 "app_ready": True,
                 "qdrant_ready": qdrant,
@@ -1084,6 +1119,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Invalid data")
             if self.path == "/api/config":
                 result = controller.update(values)
+            elif self.path == "/api/embedding-model":
+                result = controller.select_embedding_model(values.get("model"))
             elif self.path == "/api/agent/pair":
                 result = controller.agent_pair()
             elif self.path == "/api/agent/refresh":

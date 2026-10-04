@@ -22,6 +22,7 @@ import yaml
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "mcp"))
 from policy_defaults import REQUIRED_DIRECTORY_NAMES, REQUIRED_TOP_LEVEL_NAMES, ensure_required_exclusions, remove_legacy_default_exclusions
+from embedding_models import document_text
 
 load_dotenv(PROJECT_DIR / ".env")
 
@@ -636,9 +637,8 @@ def main():
                 skipped_documents += 1
                 continue
 
-            # E5 models work best with explicit passage/query prefixes.
             embedding_inputs = [
-                f"passage: {record['text']}"
+                document_text(MODEL_NAME, record["text"])
                 for record in chunk_records
             ]
 

@@ -45,6 +45,9 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
         status.config = {...status.config, source_selection: body.source_selection, host_root: paths?.[0] || status.config.host_root, source_mode: 'host_agent'};
         status.source_root = status.config.source_root;
         result = status.config;
+      } else if (route === '/api/embedding-model') {
+        status.config = {...status.config, embedding_model: body.model};
+        result = status.config;
       } else if (route === '/api/status') result = status;
       else if (route === '/api/folder/check') result = {reachable: true, mode: 'host_agent'};
       else if (route === '/api/scan/files') result = {files: ['notes/first.md', 'notes/second.md', 'notes/third.md']};
@@ -67,6 +70,22 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
 }
 
 const legacy = {source_selection: 'auto', source_mode: 'host_agent', source_root: '/data/host-documents', host_root: '', setup_step: 2, folders: []};
+
+test('model choice shows hardware guidance and keeps active search until indexing', async () => {
+  const {elements, calls, context, status} = dashboard({...legacy, embedding_model: 'e5-small', active_embedding_model: 'e5-small', onboarding_complete: true, setup_step: 7});
+  status.embedding_models = {
+    'e5-small': {name: 'E5 small', use_case: 'Small VMs', resources: 'Low', speed: 'Fast', dimensions: 384, note: 'Default'},
+    'bge-m3': {name: 'BGE-M3', use_case: 'Larger VMs', resources: 'High', speed: 'Slow', dimensions: 1024, note: 'Dense only'}
+  };
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['dashboard-model-options'].children.length, 2);
+  assert.match(elements['dashboard-model-options'].children[1].children[0].children[2].textContent, /1024 dimensions/);
+  await elements['dashboard-model-options'].children[1].children[0].onclick();
+  assert.deepEqual(calls.find(x => x.route === '/api/embedding-model').body, {model: 'bge-m3'});
+  assert.equal(status.config.active_embedding_model, 'e5-small');
+  assert.match(elements['dashboard-model-state'].textContent, /separate index/);
+  assert.equal(elements.run.textContent, 'Index with selected model');
+});
 
 test('adding a folder checks reachability and shows it in the list', async () => {
   const {elements, calls, context} = dashboard(legacy);

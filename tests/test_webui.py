@@ -18,8 +18,71 @@ ROOT = Path(__file__).resolve().parents[1] / "knowledge-mcp"
 sys.path.insert(0, str(ROOT / "mcp"))
 import webui as app
 import policy_defaults
+from embedding_models import MODELS, document_text, query_text
 sys.path.insert(0, str(ROOT))
 import host_agent
+
+
+class EmbeddingModelTest(unittest.TestCase):
+    def test_profiles_keep_collections_distinct_and_format_text(self):
+        self.assertEqual(len({item["collection"] for item in MODELS.values()}), len(MODELS))
+        self.assertEqual(document_text(MODELS["e5-small"]["model"], "hello"), "passage: hello")
+        self.assertEqual(query_text(MODELS["e5-base"]["model"], "hello"), "query: hello")
+        self.assertEqual(document_text(MODELS["bge-m3"]["model"], "hello"), "hello")
+        self.assertEqual(query_text(MODELS["bge-m3"]["model"], "hello"), "hello")
+
+    def test_selection_preserves_active_index_until_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", data / "documents"),
+                patch.object(app, "MANAGED_SOURCE", data / "documents"), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
+                patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+                patch.dict(app.os.environ, {"INGESTION_BASE_DIR": str(data / "ingestion")}),
+            ):
+                controller = app.Controller()
+                controller.config["active_embedding_model"] = "e5-small"
+                controller._save()
+                with self.assertRaisesRegex(ValueError, "supported embedding model"):
+                    controller.select_embedding_model("unknown")
+                controller.select_embedding_model("bge-m3")
+                self.assertEqual(controller._env()["DENSE_COLLECTION"], "documents")
+                candidate = controller._env("bge-m3", indexing=True)
+                self.assertEqual(candidate["DENSE_COLLECTION"], "documents_bge_m3")
+                self.assertEqual(candidate["EMBED_BATCH_SIZE"], "4")
+                self.assertEqual(candidate["INGESTION_BASE_DIR"], str(data / "ingestion" / "models" / "bge-m3"))
+                controller._finish_index(Mock(wait=lambda: 1), False, "bge-m3")
+                self.assertEqual(controller.config["active_embedding_model"], "e5-small")
+                controller._finish_index(Mock(wait=lambda: 0), False, "bge-m3")
+                self.assertEqual(controller.config["active_embedding_model"], "bge-m3")
+                self.assertEqual(controller._env()["DENSE_COLLECTION"], "documents_bge_m3")
+                controller.close()
+                restored = app.Controller()
+                self.assertEqual(restored.config["active_embedding_model"], "bge-m3")
+                restored.close()
+
+    def test_legacy_custom_environment_index_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "config.json").write_text(json.dumps({"setup_step": 7, "onboarding_complete": True, "mcp_enabled": False}), encoding="utf-8")
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", data / "documents"),
+                patch.object(app, "MANAGED_SOURCE", data / "documents"), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "POLICY", data / "index-policy.yaml"),
+                patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+                patch.dict(app.os.environ, {"MODEL_NAME": "example/custom-model", "DENSE_COLLECTION": "custom_vectors", "INGESTION_BASE_DIR": str(data / "ingestion")}),
+            ):
+                controller = app.Controller()
+                self.assertEqual(controller.config["active_embedding_model"], "environment")
+                self.assertEqual(controller._env()["DENSE_COLLECTION"], "custom_vectors")
+                controller.select_embedding_model("e5-small")
+                self.assertEqual(controller._env()["DENSE_COLLECTION"], "custom_vectors")
+                candidate = controller._env("e5-small", indexing=True)
+                self.assertEqual(candidate["DENSE_COLLECTION"], "documents")
+                self.assertEqual(candidate["INGESTION_BASE_DIR"], str(data / "ingestion" / "models" / "e5-small"))
+                controller.close()
 
 
 class AdminBoundaryTest(unittest.TestCase):

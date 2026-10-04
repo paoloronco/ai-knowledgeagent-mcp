@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 
 from qdrant_client import QdrantClient
 from policy_defaults import REQUIRED_DIRECTORY_NAMES
+from embedding_models import query_text
 
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
@@ -569,7 +570,7 @@ def lexical_search(
 
 def dense_search(query):
     vector = model.encode(
-        [f"query: {query}"],
+        [query_text(MODEL_NAME, query)],
         normalize_embeddings=True,
     )[0]
 
