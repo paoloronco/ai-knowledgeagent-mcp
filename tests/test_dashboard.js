@@ -10,32 +10,43 @@ const html = fs.readFileSync(path.join(ui, 'webui.html'), 'utf8');
 
 function dashboard(config, connected = false) {
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, {
-    value: '', textContent: '', children: [], open: false,
+    value: '', textContent: '', children: [], open: false, disabled: false,
     classList: {
       classes: new Set(),
       toggle(name, force) { if (force ?? !this.classes.has(name)) this.classes.add(name); else this.classes.delete(name); },
       remove(name) { this.classes.delete(name); }, add(name) { this.classes.add(name); },
       contains(name) { return this.classes.has(name); }
-    }, replaceChildren(...items) { this.children = items; }, append(item) { this.children.push(item); }, scrollTo() {}, removeAttribute(name) { if (name === 'value') this.value = undefined; }
+    }, replaceChildren(...items) { this.children = items; }, append(...items) { this.children.push(...items); }, scrollTo() {},
+    removeAttribute(name) { if (name === 'value') this.value = undefined; }, setAttribute() {}, showModal() { this.open = true; }, close() { this.open = false; }
   }]));
   const calls = [];
+  const makeClassList = () => ({classes: new Set(), toggle(name, force) { if (force) this.classes.add(name); else this.classes.delete(name); }, contains(name) { return this.classes.has(name); }});
+  const panels = [...html.matchAll(/class="card dashboard-panel" data-page="([^"]+)"/g)].map(([, page]) => ({dataset: {page}, classList: makeClassList()}));
+  const links = [...html.matchAll(/data-nav-page="([^"]+)"/g)].map(([, navPage]) => ({dataset: {navPage}, classList: makeClassList()}));
+  const initialRoot = config.source_mode === 'host_agent' ? config.host_root : config.source_root;
   const status = {config: {sync_request: 0, ...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected, agent_managed: true,
     source_ready: connected || config.source_mode === 'container', agent_file_count: 2, agent_sync_request_completed: 1,
-    scan_complete: false, scan_ready: false, scan_running: false, scan_checked: 0, scan_eligible_count: 0, scan_eligible_preview: []};
+    scan_complete: false, scan_ready: false, scan_running: false, scan_checked: 0, scan_eligible_count: 0, scan_eligible_preview: [],
+    document_paths: initialRoot ? [initialRoot] : []};
+  const location = {pathname: '/dashboard/indexing'};
   const context = vm.createContext({
-    document: {getElementById: id => elements[id] || null, querySelectorAll: () => [],
-      createElement: () => ({className: '', textContent: ''}), activeElement: null},
-    token: 'test-control-token', Date, clearTimeout() {},
+    document: {getElementById: id => elements[id] || null, querySelectorAll: selector => selector === '.dashboard-panel' ? panels : selector === '[data-nav-page]' ? links : [],
+      createElement: () => ({className: '', textContent: '', children: [], append(...nodes) { this.children.push(...nodes); }, setAttribute() {}}), activeElement: null},
+    token: 'test-control-token', Date, clearTimeout() {}, location, history: {pushState(_, __, url) { location.pathname = url; }},
     setTimeout(callback, delay) { if (delay === 2000) callback(); },
     async fetch(route, options) {
       const body = options?.body ? JSON.parse(options.body) : null;
       calls.push({route, body});
       let result;
       if (route === '/api/config') {
-        status.config = {...status.config, source_selection: body.source_selection, host_root: body.document_root, source_mode: 'host_agent'};
+        const paths = body.document_paths;
+        status.document_paths = paths || status.document_paths;
+        status.config = {...status.config, source_selection: body.source_selection, host_root: paths?.[0] || status.config.host_root, source_mode: 'host_agent'};
         status.source_root = status.config.source_root;
         result = status.config;
       } else if (route === '/api/status') result = status;
+      else if (route === '/api/folder/check') result = {reachable: true, mode: 'host_agent'};
+      else if (route === '/api/scan/files') result = {files: ['notes/first.md', 'notes/second.md', 'notes/third.md']};
       else if (route === '/api/agent/refresh') result = {sync_request: 1};
       else if (route === '/api/scan') result = {requested: true};
       else if (route === '/api/onboarding/progress') result = {setup_step: body.step};
@@ -46,30 +57,36 @@ function dashboard(config, connected = false) {
   vm.runInContext(script, context);
   context.initial = status;
   vm.runInContext('current = initial; wizardStep = 2; fillSourceInputs();', context);
-  return {elements, calls, context, status};
+  return {elements, calls, context, status, panels, links, location};
 }
 
-const legacy = {source_selection: 'auto', source_mode: 'container', source_root: '/data/documents', host_root: '', setup_step: 2};
+const legacy = {source_selection: 'auto', source_mode: 'host_agent', source_root: '/data/host-documents', host_root: '', setup_step: 2, folders: []};
 
-test('saving an arbitrary root uses automatic selection despite a legacy container source', async () => {
+test('adding a folder checks reachability and shows it in the list', async () => {
   const {elements, calls, context} = dashboard(legacy);
   elements['setup-source-root'].value = '/mnt/documents';
-  await vm.runInContext('saveSource(false, true)', context);
+  await vm.runInContext('addFolder(true)', context);
+  assert.deepEqual(calls.find(x => x.route === '/api/folder/check').body, {path: '/mnt/documents', source_selection: 'auto'});
   assert.deepEqual(calls.find(x => x.route === '/api/config').body, {
-    document_root: '/mnt/documents', source_selection: 'auto', folders: [''], interval_hours: 0
+    document_paths: ['/mnt/documents'], source_selection: 'auto', interval_hours: 0
   });
-  assert.equal(elements['dashboard-source-root'].value, '/mnt/documents');
-  assert.match(elements['setup-source-status'].textContent, /Folder selected: \/mnt\/documents/);
+  assert.equal(elements['setup-folder-list'].children[0].children[0].textContent, '/mnt/documents');
+  assert.equal(elements['setup-source-root'].value, '');
   assert.doesNotMatch(html, /host_agent\.py install|Generate pairing key|Download the host service/);
 });
 
-test('Next advances to indexing policy before the host service scans', async () => {
+test('folders can be removed, then Next advances to policy without scanning', async () => {
   const {elements, calls, context} = dashboard(legacy);
   elements['setup-source-root'].value = '/home/user/My documents';
-  await vm.runInContext('saveSource(true, true)', context);
+  await vm.runInContext('addFolder(true)', context);
+  elements['setup-source-root'].value = '/home/user/Other documents';
+  await vm.runInContext('addFolder(true)', context);
+  assert.equal(elements['setup-folder-list'].children.length, 2);
+  await vm.runInContext("removeFolder('/home/user/My documents')", context);
+  assert.equal(elements['setup-folder-list'].children.length, 1);
+  await vm.runInContext('advanceFolders()', context);
   assert.equal(calls.find(x => x.route === '/api/onboarding/progress').body.step, 3);
-  assert.equal(calls.some(x => x.route === '/api/agent/refresh'), false);
-  assert.match(elements['setup-source-status'].textContent, /Folder selected:/);
+  assert.equal(calls.some(x => x.route === '/api/scan'), false);
 });
 
 test('eligible documents step shows scan progress and enables Next only with matches', async () => {
@@ -80,8 +97,8 @@ test('eligible documents step shows scan progress and enables Next only with mat
   status.scan_eligible_count = 2;
   status.agent_progress = {phase: 'scanning', checked: 12, eligible: 2, completed: 0, total: 0};
   await vm.runInContext('refresh()', context);
-  assert.doesNotMatch(elements['setup-source-status'].textContent, /Scanning/);
   assert.match(elements['setup-scan-status'].textContent, /Scanning host folder: 12 files checked, 2 eligible/);
+  assert.equal(elements['setup-eligible-list'].children.length, 0);
   assert.equal(elements['setup-sync-progress'].classList.contains('hidden'), false);
   status.agent_progress = {phase: 'transferring', checked: 20, completed: 2, total: 4};
   await vm.runInContext('refresh()', context);
@@ -100,6 +117,9 @@ test('eligible documents step shows scan progress and enables Next only with mat
   await vm.runInContext('refresh()', context);
   assert.equal(elements['scan-next'].disabled, false);
   assert.deepEqual(elements['setup-eligible-list'].children.map(x => x.textContent), ['notes/first.md', 'notes/second.md']);
+  await vm.runInContext('openEligibleFiles()', context);
+  assert.equal(elements['eligible-dialog'].open, true);
+  assert.match(elements['eligible-all'].textContent, /notes\/third\.md/);
 });
 
 test('changing access preference preserves the document path being edited', () => {
@@ -133,4 +153,42 @@ test('onboarding continues with dashboard login disabled', async () => {
   assert.equal(calls.some(x => x.route === '/api/security'), false);
   assert.equal(calls.find(x => x.route === '/api/onboarding/progress').body.step, 1);
   assert.doesNotMatch(html, /Enable login to select folders on the Docker host/);
+});
+
+test('password field is shown only when login is enabled', () => {
+  const {elements, context} = dashboard({...legacy, setup_step: 0});
+  elements['login-enabled'].checked = false;
+  vm.runInContext('toggleSetupPassword()', context);
+  assert.equal(elements['login-password-fields'].classList.contains('hidden'), true);
+  elements['login-enabled'].checked = true;
+  vm.runInContext('toggleSetupPassword()', context);
+  assert.equal(elements['login-password-fields'].classList.contains('hidden'), false);
+});
+
+test('successful dry run enables Continue to indexing', async () => {
+  const {elements, context, status, calls} = dashboard({...legacy, setup_step: 5}, true);
+  vm.runInContext('wizardStep = 5', context);
+  status.last_result = {dry_run: true, exit_code: 0, finished_at: 1};
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['dry-next'].disabled, false);
+  assert.match(elements['dry-result'].textContent, /Dry run passed/);
+  await vm.runInContext('nextStep()', context);
+  assert.equal(calls.find(x => x.route === '/api/onboarding/progress').body.step, 6);
+});
+
+test('indexing progress is visible alone until initial indexing finishes', async () => {
+  const {elements, context, status, panels, location} = dashboard({...legacy, onboarding_complete: true, setup_step: 6}, true);
+  status.index_running = true;
+  status.index_progress = {stage: 'indexing', completed: 25, total: 100};
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['setup-progress-card'].classList.contains('hidden'), true);
+  assert.equal(elements['dashboard-nav'].classList.contains('hidden'), true);
+  assert.match(elements['index-progress-label'].textContent, /25 of 100 \(25%\)/);
+  assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'indexing');
+  status.index_running = false;
+  status.config.setup_step = 7;
+  await vm.runInContext('refresh()', context);
+  vm.runInContext("goDashboardPage('services', true)", context);
+  assert.equal(location.pathname, '/dashboard/services');
+  assert.equal(panels.filter(x => x.classList.contains('active')).map(x => x.dataset.page).join(','), 'services');
 });

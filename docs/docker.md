@@ -50,16 +50,16 @@ Keep those volumes; removing them loses the dashboard settings, indexing state, 
 With the standard Compose setup on Linux/NAS:
 
 1. Open the dashboard. Login is optional during onboarding.
-2. In **Document folders**, enter any absolute **Document root path**, such as `/mnt/documents`, `/mnt/knowledge`, or `/home/user/Documents`, and click **+**.
-3. Wait for **Folder ready**, then continue with **Next**.
+2. In **Document folders**, enter an absolute folder path, such as `/mnt/documents`, `/mnt/knowledge`, or `/home/user/Documents`, and click **+**. The agent checks that it can reach the folder before adding it to the list. You can add or remove multiple folders under the same non-root parent.
+3. Save the indexing policy, then press **Scan** in **Eligible documents**. Continue when the scan finds eligible files.
 
 Compose starts the host agent automatically and the app provides its connection credentials through a private Docker volume. Python, native host services, downloads, and manual pairing are not required. With **Automatic** document location, the root is interpreted on the Linux host. To use an existing app-container mount instead, explicitly select **Folder already mounted inside the container**.
 
-The agent receives the Linux host filesystem at `/host` through a [read-only bind mount](https://docs.docker.com/engine/storage/bind-mounts/#use-a-read-only-bind-mount). It reads only the selected root, applies the indexing policy before transfer, and copies changed eligible documents into the app's persistent storage. Host symlinks are resolved within the host filesystem and restricted directories remain excluded. `/proc`, `/sys`, `/dev`, and `/run` are masked. The agent has no Docker socket and publishes no ports.
+The agent receives the Linux host filesystem at `/host` through a [read-only bind mount](https://docs.docker.com/engine/storage/bind-mounts/#use-a-read-only-bind-mount). It reads only the selected folders, applies the indexing policy before transfer, and copies changed eligible documents into the app's persistent storage. Host symlinks are resolved within the host filesystem and restricted directories remain excluded. `/proc`, `/sys`, `/dev`, and `/run` are masked. The agent has no Docker socket and publishes no ports.
 
 Changing the root from the dashboard requires no Docker configuration changes or container restart. The source stays at the chosen host path; indexing uses the synchronized copy. Mount external drives and network shares on the NAS before starting the stack so they are included in the agent's host mount. On kernels before Linux 5.12, Docker may retain write access on nested mounts despite a read-only parent mount; use Linux 5.12+ for recursive read-only protection.
 
-The status under the path shows connection errors, files checked during scanning, transfer progress, and the eligible document count. **Next** waits for the sync already triggered by selecting the folder, then verifies it before continuing. The agent rescans every five minutes, responds to source changes and **Sync folder now**, and pauses synchronization while indexing runs. Scheduled indexing uses the existing incremental hash state, so unchanged documents are not embedded again.
+The separate **Eligible documents** step shows connection errors, files checked, transfer progress, and the eligible count after you press **Scan**. Its popup shows every eligible file and supports TXT, LOG, and JSON downloads. After onboarding, the agent rescans every five minutes and responds to **Sync folder now**. It pauses synchronization while indexing runs. Scheduled indexing uses the existing incremental hash state, so unchanged documents are not embedded again.
 
 Check the agent with `docker compose logs host-agent`. To restart it, use `docker compose restart host-agent`. The connection credentials are retained in `host_agent_data`, and the app stores only their hash in `app_data`. A Compose upgrade starts the agent without requiring user installation. Keep the existing app and Qdrant volumes during migration.
 
@@ -81,9 +81,9 @@ services:
           create_host_path: false
 ```
 
-Replace `source` with an existing absolute host path, then run `docker compose up -d`. Open **Document access settings**, choose **Folder already mounted inside the container**, and enter `/knowledge` as the **Document root path**. Click **+**, or **Next** during onboarding, to save the entire root. On Windows, use a host source such as `C:/Users/Name/Documents`. A bind mount still requires a container recreation when changed.
+Replace `source` with an existing absolute host path, then run `docker compose up -d`. In **Document folders**, choose **Folder already mounted inside the container**, enter `/knowledge`, and click **+** to check and add it. On Windows, use a host source such as `C:/Users/Name/Documents`. A bind mount still requires a container recreation when changed.
 
-To select folders from different host locations, mount each one under a separate subdirectory of the same container root (for example `/knowledge/team-a` and `/knowledge/team-b`), then select `/knowledge` as the document root in the dashboard.
+To select folders from different host locations, mount each one under a separate subdirectory of the same container root (for example `/knowledge/team-a` and `/knowledge/team-b`), then add each mounted folder in the dashboard.
 
 The dashboard health check is also available at `/api/health` on port 8080 and returns an error while Qdrant is unavailable. The image uses it for its Docker health status. Scheduled indexing rescans the document root and skips parsing and embedding files already recorded unchanged in the persistent ingestion state.
 

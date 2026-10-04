@@ -49,8 +49,10 @@ The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isol
 Once the application has been deployed with networking and document access configured:
 
 - Open `http://HOST_IP:8080`.
-- Onboarding guides you through optional dashboard login, service checks, document root selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a separate document scan with the eligible count and file preview, a dry-run test, and initial indexing. The dry run starts only after the scan finds eligible documents. If you skip login, anyone who can reach port 8080 can manage the dashboard.
-- Enter a **Document root path**, such as `/mnt/documents`, and click **+**. With the automatic host agent connected, the path refers to a folder on the Linux host.
+- Onboarding guides you through optional dashboard login, service checks, document folder selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a manual document scan, a dry-run test, and initial indexing. If you skip login, anyone who can reach port 8080 can manage the dashboard.
+- Enter a folder path such as `/mnt/documents` and click **+**. The app checks access before adding it to the list; you can add or remove multiple folders that share a non-root parent. With the host agent connected, paths refer to folders on the Linux host.
+- After saving the policy, press **Scan** to view the eligible count and a preview. **View all eligible documents** opens the full list and offers TXT, LOG, and JSON downloads. The dry run starts only after the scan finds eligible documents.
+- Initial indexing opens the dedicated indexing page with live stage, document count, percentage where available, and the log. Once it finishes, the other dashboard sections are available at separate `/dashboard/…` URLs.
 - After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.
 - Use the dashboard to manage services and schedule incremental indexing.
 - Persistent Docker volumes retain documents, settings, indexing state, the model cache, Qdrant data, and the agent connection across container updates.

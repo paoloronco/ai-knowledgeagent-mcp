@@ -29,6 +29,23 @@ BASE_DIR = Path(os.getenv("INGESTION_BASE_DIR", str(PROJECT_DIR / ".state")))
 POLICY_FILE = Path(os.getenv("POLICY_FILE", str(PROJECT_DIR / "mcp" / "index-policy.yaml")))
 STATE_FILE = BASE_DIR / "state" / "index-state.json"
 ERROR_LOG = BASE_DIR / "logs" / "errors.log"
+PROGRESS_FILE = Path(os.environ["INGEST_PROGRESS_FILE"]) if os.getenv("INGEST_PROGRESS_FILE") else None
+_progress_last_write = 0
+_progress_last_stage = None
+
+
+def write_progress(stage, completed=0, total=None, force=False):
+    global _progress_last_write, _progress_last_stage
+    if PROGRESS_FILE is None:
+        return
+    now = time.monotonic()
+    if not force and stage == _progress_last_stage and now - _progress_last_write < 0.25:
+        return
+    value = {"stage": stage, "completed": completed, "total": total, "updated_at": time.time()}
+    temp = PROGRESS_FILE.with_suffix(".tmp")
+    temp.write_text(json.dumps(value), encoding="utf-8")
+    temp.replace(PROGRESS_FILE)
+    _progress_last_write, _progress_last_stage = now, stage
 
 COLLECTION_NAME = os.getenv("DENSE_COLLECTION", "documents")
 
@@ -456,6 +473,7 @@ def main():
     root = Path(policy["knowledge_root"]).resolve()
 
     print("Discovering candidate documents...")
+    write_progress("discovering")
 
     candidates = discover_documents(policy)
 
@@ -472,7 +490,7 @@ def main():
     print("Calculating SHA-256 hashes...")
 
     hash_failures = 0
-    for path in tqdm(candidates):
+    for count, path in enumerate(tqdm(candidates), 1):
         try:
             digest = sha256_file(path)
 
@@ -484,6 +502,8 @@ def main():
         except Exception as exc:
             hash_failures += 1
             log_error(path, exc)
+        write_progress("hashing", count, len(candidates))
+    write_progress("hashing", len(candidates), len(candidates), force=True)
 
     unique_documents = [
         (digest, paths)
@@ -512,7 +532,7 @@ def main():
         parsed = 0
         failed = 0
 
-        for digest, paths in tqdm(unique_documents):
+        for count, (digest, paths) in enumerate(tqdm(unique_documents), 1):
             primary = paths[0]
 
             try:
@@ -531,6 +551,8 @@ def main():
             except Exception as exc:
                 failed += 1
                 log_error(primary, exc)
+            write_progress("dry_run", count, len(unique_documents))
+        write_progress("dry_run", len(unique_documents), len(unique_documents), force=True)
 
         print("\n=== DRY RUN RESULTS ===")
         print(f"Documents parsed: {parsed}")
@@ -543,6 +565,7 @@ def main():
 
         if failed or hash_failures:
             raise SystemExit(1)
+        write_progress("complete", parsed, parsed, force=True)
         return
 
     # -------------------------------------------------------------
@@ -551,6 +574,7 @@ def main():
 
     print("\nLoading embedding model:")
     print(MODEL_NAME)
+    write_progress("loading_model")
 
     from sentence_transformers import SentenceTransformer
 
@@ -572,7 +596,9 @@ def main():
     failed_documents = 0
     indexed_chunks = 0
 
-    for digest, paths in tqdm(unique_documents):
+    write_progress("indexing", 0, len(unique_documents), force=True)
+    for count, (digest, paths) in enumerate(tqdm(unique_documents), 1):
+        write_progress("indexing", count - 1, len(unique_documents))
         primary = paths[0]
 
         relative_primary = primary.relative_to(root).as_posix()
@@ -693,6 +719,8 @@ def main():
             failed_documents += 1
             log_error(primary, exc)
 
+    write_progress("indexing", len(unique_documents), len(unique_documents), force=True)
+
     elapsed = time.time() - start_time
 
     if args.limit is None and not failed_documents and not hash_failures:
@@ -713,6 +741,7 @@ def main():
     print(f"Elapsed:           {elapsed / 60:.1f} min")
     if failed_documents or hash_failures:
         raise SystemExit(1)
+    write_progress("complete", len(unique_documents), len(unique_documents), force=True)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,7 @@ dist/
 htmlcov/
 .coverage
 .pytest_cache/
+.playwright-cli/
 .nox/
 
 # =============================================================================

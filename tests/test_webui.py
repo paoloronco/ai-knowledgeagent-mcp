@@ -174,6 +174,7 @@ class AdminBoundaryTest(unittest.TestCase):
                     time.sleep(0.01)
                 self.assertEqual(controller.last_result["exit_code"], 0)
                 self.assertIn("Documents parsed: 1", (data / "ingest.log").read_text(encoding="utf-8"))
+                self.assertEqual(controller.status()["index_progress"]["stage"], "complete")
                 controller.advance_setup(6)
                 controller.complete_onboarding()
                 controller._finish_index(Mock(wait=lambda: 1), False)
@@ -507,6 +508,59 @@ class AdminBoundaryTest(unittest.TestCase):
                         with self.assertRaises(urllib.error.HTTPError) as denied:
                             urllib.request.urlopen(bad)
                         self.assertEqual(denied.exception.code, 403)
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                        controller.close()
+
+    def test_selected_host_folders_are_checked_and_only_they_are_synced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data = base / "data"
+            host = base / "host"
+            for name in ("first", "second", "unselected"):
+                (host / name).mkdir(parents=True)
+                (host / name / "note.md").write_text(name, encoding="utf-8")
+            with (
+                patch.object(app, "DATA", data), patch.object(app, "SOURCE", data / "documents"),
+                patch.object(app, "MANAGED_SOURCE", data / "documents"), patch.object(app, "HOST_SOURCE", data / "host-documents"),
+                patch.object(app, "CONFIG", data / "config.json"), patch.object(app, "AUTH", data / "auth.json"),
+                patch.object(app, "AGENT_AUTH", data / "agent-auth.json"), patch.object(app, "AGENT_MANIFEST", data / "agent-manifest.json"),
+                patch.object(app, "POLICY", data / "index-policy.yaml"),
+            ):
+                controller = app.Controller()
+                token = controller.agent_pair()["token"]
+                with patch.object(app, "controller", controller):
+                    server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        url = f"http://127.0.0.1:{server.server_port}"
+                        controller.agent_task()
+                        checked = []
+                        probe = threading.Thread(target=lambda: checked.append(controller.check_folder(str(host / "first"), "host_agent")))
+                        probe.start()
+                        for _ in range(100):
+                            if controller.folder_probe:
+                                break
+                            time.sleep(0.01)
+                        host_agent.check_folder(url, token, controller.folder_probe, None)
+                        probe.join(timeout=2)
+                        self.assertEqual(checked, [{"reachable": True, "mode": "host_agent"}])
+                        selected = [str(host / "first"), str(host / "second")]
+                        result = controller.update({"document_paths": selected, "source_selection": "host_agent"})
+                        self.assertEqual(result["folders"], ["first", "second"])
+                        self.assertEqual(result["host_root"], str(host))
+                        self.assertFalse(controller.agent_task()["scan_enabled"])
+                        controller.request_agent_sync()
+                        task = host_agent.request(url, token, "/api/agent/task")
+                        self.assertTrue(task["scan_enabled"])
+                        host_agent.sync(url, token, task)
+                        self.assertEqual(controller.scan_files(), ["first/note.md", "second/note.md"])
+                        self.assertFalse((data / "host-documents" / "unselected").exists())
+                        self.assertEqual(controller.status()["document_paths"], selected)
+                        controller.update({"document_paths": [], "source_selection": "host_agent"})
+                        self.assertEqual(controller.status()["document_paths"], [])
                     finally:
                         server.shutdown()
                         server.server_close()

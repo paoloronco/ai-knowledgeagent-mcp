@@ -86,7 +86,7 @@ def resolve_host_folder(root, host_mount=None):
     return mount.joinpath(*resolved)
 
 
-def inventory(root, policy, host_mount=None, progress=None):
+def inventory(root, policy, host_mount=None, progress=None, folders=None):
     folder = resolve_host_folder(root, host_mount)
     if not folder.is_dir():
         raise ValueError(f"Host folder is unavailable: {root}")
@@ -104,26 +104,36 @@ def inventory(root, policy, host_mount=None, progress=None):
     def unreadable(error):
         raise RuntimeError(f"Could not read host folder {error.filename}: {error.strerror}") from error
 
-    for base, dirs, names in os.walk(folder, followlinks=False, onerror=unreadable):
-        current = Path(base)
-        relative_dir = current.relative_to(folder)
-        dirs[:] = sorted(name for name in dirs if not (current / name).is_symlink() and name.casefold() not in restricted and (relative_dir.parts or name.casefold() not in {x.casefold() for x in policy["exclude_top_level"]}))
-        for name in sorted(names):
-            path = current / name
-            checked += 1
-            if path.is_symlink():
+    for selected_name in folders if folders is not None else [""]:
+        if not isinstance(selected_name, str) or "\\" in selected_name or selected_name.startswith("/") or (selected_name != "" and any(part in ("", ".", "..") for part in selected_name.split("/"))):
+            raise ValueError("Invalid selected host folder")
+        if any(part.casefold() in restricted for part in selected_name.split("/") if part):
+            raise ValueError("The selected host folder is excluded by the indexing policy")
+        selected = folder.joinpath(*selected_name.split("/")) if selected_name else folder
+        if not selected.is_dir() or selected.is_symlink() or not selected.resolve().is_relative_to(folder):
+            raise ValueError(f"Host folder is unavailable: {selected_name}")
+        for base, dirs, names in os.walk(selected, followlinks=False, onerror=unreadable):
+            current = Path(base)
+            relative_dir = current.relative_to(folder)
+            dirs[:] = sorted(name for name in dirs if not (current / name).is_symlink() and name.casefold() not in restricted and (relative_dir.parts or name.casefold() not in {x.casefold() for x in policy["exclude_top_level"]}))
+            for name in sorted(names):
+                path = current / name
+                relative = path.relative_to(folder).as_posix()
+                if relative in files:
+                    continue
+                checked += 1
+                if path.is_symlink():
+                    if progress:
+                        progress(checked, len(files))
+                    continue
+                try:
+                    size = path.stat().st_size
+                    if allowed_file(relative, size, policy):
+                        files[relative] = {"size": size, "sha256": file_hash(path)}
+                except (OSError, ValueError) as error:
+                    raise RuntimeError(f"Could not read {path}: {error}") from error
                 if progress:
                     progress(checked, len(files))
-                continue
-            relative = path.relative_to(folder).as_posix()
-            try:
-                size = path.stat().st_size
-                if allowed_file(relative, size, policy):
-                    files[relative] = {"size": size, "sha256": file_hash(path)}
-            except (OSError, ValueError) as error:
-                raise RuntimeError(f"Could not read {path}: {error}") from error
-            if progress:
-                progress(checked, len(files))
     if progress:
         progress(checked, len(files), force=True)
     return folder, files
@@ -149,7 +159,7 @@ def sync(base, token, task, host_mount=None):
         report("scanning", force=force)
 
     report("scanning")
-    folder, files = inventory(task["host_root"], task["policy"], host_mount, scanned)
+    folder, files = inventory(task["host_root"], task["policy"], host_mount, scanned, task.get("folders"))
     report("planning")
     body = {"revision": task["revision"], "sync_request": task["sync_request"], "files": files}
     missing = request(base, token, "/api/agent/plan", body, timeout=1800)["missing"]
@@ -213,9 +223,23 @@ def heartbeat(base, token, done):
             LOG.warning("Dashboard heartbeat failed")
 
 
+def check_folder(base, token, probe, host_mount):
+    try:
+        folder = resolve_host_folder(probe["path"], host_mount)
+        if not folder.is_dir():
+            raise ValueError(f"Host folder is unavailable: {probe['path']}")
+        with os.scandir(folder) as entries:
+            next(entries, None)
+        result = {"id": probe["id"], "reachable": True}
+    except (OSError, ValueError) as error:
+        result = {"id": probe["id"], "reachable": False, "error": str(error)}
+    request(base, token, "/api/agent/folder-probe", result)
+
+
 def run(config_path, once=False, scan_seconds=300, host_mount=None):
     last_signature = None
     last_scan = 0
+    last_probe = None
     while True:
         task = None
         try:
@@ -223,6 +247,10 @@ def run(config_path, once=False, scan_seconds=300, host_mount=None):
             base = validate_url(config["url"])
             token = config["token"]
             task = request(base, token, "/api/agent/task")
+            probe = task.get("folder_probe")
+            if probe and probe["id"] != last_probe:
+                check_folder(base, token, probe, host_mount)
+                last_probe = probe["id"]
             signature = (task["revision"], task["sync_request"], json.dumps(task["policy"], sort_keys=True))
             if task["source_mode"] == "host_agent" and task["host_root"] and task.get("scan_enabled", True) and not task.get("index_running") and (signature != last_signature or time.time() - last_scan >= scan_seconds):
                 done = threading.Event()
@@ -246,7 +274,7 @@ def run(config_path, once=False, scan_seconds=300, host_mount=None):
                     pass
             if once:
                 raise
-        time.sleep(15)
+        time.sleep(3)
 
 
 def install(url, config_path):

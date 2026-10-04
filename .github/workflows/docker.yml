@@ -104,7 +104,7 @@ jobs:
 
           with urllib.request.urlopen(base) as response:
               page = response.read().decode()
-          assert "First-time setup" in page
+          assert "Setup progress" in page and "First-time setup" not in page
           assert "host_agent.py install" not in page and "Generate pairing key" not in page
           token = re.search(r"const token='([^']+)'", page).group(1)
           request = urllib.request.Request(
@@ -147,6 +147,7 @@ jobs:
           assert config["source_selection"] == "auto"
           for step in (2, 3, 4):
               post("/api/onboarding/progress", {"step": step}, cookie).close()
+          post("/api/scan", {}, cookie).close()
           assert wait_source(host_root)["agent_file_count"] == 1
           next_root = Path(os.environ["RUNNER_TEMP"]) / "knowledge-agent-next"
           next_root.mkdir()
@@ -156,6 +157,7 @@ jobs:
           post("/api/config", {"document_root": str(next_root), "source_selection": "auto", "folders": [""]}, cookie).close()
           for step in (3, 4):
               post("/api/onboarding/progress", {"step": step}, cookie).close()
+          post("/api/scan", {}, cookie).close()
           assert wait_source(str(next_root))["agent_file_count"] == 1
           subprocess.run(["docker", "exec", "knowledge-smoke", "python", "-c", "from pathlib import Path; p=Path('/data/host-documents'); assert (p/'second.md').read_text() == 'Second folder document'; assert not (p/'host.md').exists(); assert not (p/'cache/excluded.md').exists()"], check=True)
           subprocess.run(["docker", "compose", "-p", "knowledge-smoke", "-f", "compose.yaml", "-f", str(Path(os.environ["RUNNER_TEMP"]) / "knowledge-smoke.yaml"), "restart"], check=True)
