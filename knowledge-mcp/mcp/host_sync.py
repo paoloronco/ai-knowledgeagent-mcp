@@ -30,8 +30,15 @@ def relative_path(value):
     return path
 
 
+def is_office_lock_file(name):
+    """Office's ~$ files are temporary locks, not readable documents."""
+    return name.startswith("~$") and PurePosixPath(name).suffix.lower() in {".docx", ".pptx"}
+
+
 def allowed_file(value, size, policy):
     path = relative_path(value)
+    if is_office_lock_file(path.name):
+        return False
     if type(size) is not int or size < 1 or size > policy["max_file_size_mb"] * 1024 * 1024:
         return False
     parts = path.parts

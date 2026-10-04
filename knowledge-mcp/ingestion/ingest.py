@@ -24,6 +24,7 @@ sys.path.insert(0, str(PROJECT_DIR / "mcp"))
 from policy_defaults import REQUIRED_DIRECTORY_NAMES, REQUIRED_TOP_LEVEL_NAMES, ensure_required_exclusions, remove_legacy_default_exclusions
 from embedding_models import document_text
 from embedding_device import embedding_device
+from host_sync import is_office_lock_file
 
 load_dotenv(PROJECT_DIR / ".env")
 
@@ -116,6 +117,9 @@ def sha256_file(path):
 
 def is_candidate(path, root, policy):
     if not path.is_file():
+        return False
+
+    if is_office_lock_file(path.name):
         return False
 
     if not path.resolve().is_relative_to(root.resolve()):

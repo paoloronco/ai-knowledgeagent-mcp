@@ -591,6 +591,16 @@ class AdminBoundaryTest(unittest.TestCase):
                         self.assertTrue(controller.status()["source_ready"])
                         self.assertEqual(controller.status()["agent_file_count"], 1)
                         self.assertEqual(controller._env()["KNOWLEDGE_ROOT"], str(host_mirror))
+                        # An older companion can still report a Word lock file.
+                        lock_name = "notes/~$draft.docx"
+                        lock_file = host_mirror / lock_name
+                        lock_file.write_bytes(b"stale lock")
+                        old_inventory = dict(controller.agent_manifest["files"])
+                        old_inventory[lock_name] = {"size": lock_file.stat().st_size, "sha256": hashlib.sha256(lock_file.read_bytes()).hexdigest()}
+                        old_payload = {"revision": controller.config["sync_revision"], "sync_request": controller.config["sync_request"], "files": old_inventory}
+                        self.assertNotIn(lock_name, controller.agent_plan(old_payload)["missing"])
+                        self.assertEqual(controller.agent_commit(old_payload)["synced"], 1)
+                        self.assertFalse(lock_file.exists())
                         (host / "notes" / "first.md").write_text("second version", encoding="utf-8")
                         host_agent.sync(url, token, task)
                         self.assertEqual((host_mirror / "notes" / "first.md").read_text(), "second version")

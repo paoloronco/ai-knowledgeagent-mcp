@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import yaml
-from host_sync import allowed_file, host_root, relative_path
+from host_sync import allowed_file, host_root, is_office_lock_file, relative_path
 from embedding_models import DEFAULT_MODEL, MODELS
 from gpu_probe import GPU_MONITOR
 from policy_defaults import ensure_required_exclusions, remove_legacy_default_exclusions
@@ -518,6 +518,9 @@ class Controller:
         request_id = values.get("sync_request")
         if not isinstance(files, dict) or len(files) > 50000:
             raise ValueError("Invalid document inventory")
+        # Accept inventories from an older companion while dropping Office lock
+        # files. The newer companion excludes them before uploading.
+        files = {name: item for name, item in files.items() if not is_office_lock_file(relative_path(name).name)}
         with self.lock:
             if self.config["source_mode"] != "host_agent" or not self.config["host_root"] or revision != self.config["sync_revision"]:
                 raise ValueError("Host folder changed; retry the sync")
@@ -570,6 +573,7 @@ class Controller:
         request_id = values.get("sync_request")
         if not isinstance(files, dict) or len(files) > 50000:
             raise ValueError("Invalid document inventory")
+        files = {name: item for name, item in files.items() if not is_office_lock_file(relative_path(name).name)}
         with self.lock:
             if not self.sync_in_progress or revision != self.config["sync_revision"] or self.config["source_mode"] != "host_agent":
                 raise ValueError("No active host sync")

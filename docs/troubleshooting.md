@@ -28,6 +28,16 @@ Restart the MCP server after ingestion. Retrieval snapshots Qdrant payloads into
 
 The parser extracts embedded text only. It does not OCR scanned pages.
 
+## Indexing reaches 100% but reports failures
+
+The percentage counts documents examined, including any that fail parsing or indexing. Documents completed before the error remain in Qdrant, and the next run skips unchanged documents recorded in the persistent ingestion state. To find the actual per-file errors in a Docker installation, run:
+
+```bash
+docker exec knowledge-mcp sh -lc 'find /data/ingestion -name errors.log -type f -print -exec tail -n 20 {} \;'
+```
+
+Review file paths before sharing this output because it may contain private names. Microsoft Office lock files beginning with `~$` are excluded by current releases. After updating both app and host-agent containers while retaining their named volumes, run the incremental update from the dashboard; already indexed documents are not embedded again.
+
 ## SentenceTransformer import fails in torchvision
 
 Check that torch and torchvision in the active environment are compatible. A mismatched pair can fail before the embedding model loads. Ingestion dry runs and knowledge_status do not require the model.

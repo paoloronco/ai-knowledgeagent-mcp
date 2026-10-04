@@ -22,6 +22,8 @@ class DockerHostAccessTest(unittest.TestCase):
             folder = mount / "mnt" / "my-documents"
             folder.mkdir(parents=True)
             (folder / "example.md").write_text("Example document", encoding="utf-8")
+            (folder / "~$draft.docx").write_bytes(b"Office lock")
+            (folder / "~$slides.pptx").write_bytes(b"Office lock")
             (folder / "cache").mkdir()
             (folder / "cache" / "excluded.md").write_text("Excluded fixture", encoding="utf-8")
             resolved, files = host_agent.inventory("/mnt/my-documents", self.policy, mount)

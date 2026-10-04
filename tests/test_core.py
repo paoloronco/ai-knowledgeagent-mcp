@@ -61,6 +61,8 @@ class CoreFlowTest(unittest.TestCase):
                 (root / name).mkdir()
                 (root / name / "note.md").write_text("Visible content", encoding="utf-8")
             (root / "team-a" / "skip.md").write_text("Excluded content", encoding="utf-8")
+            (root / "team-a" / "~$draft.docx").write_bytes(b"Office lock, not a document")
+            (root / "team-a" / "~$slides.pptx").write_bytes(b"Office lock, not slides")
             with patch.dict(os.environ, {"KNOWLEDGE_ROOT": str(root)}):
                 policy = ingest.load_policy()
             policy["exclude_files"] = ["skip.md"]
