@@ -183,6 +183,8 @@ class AdminBoundaryTest(unittest.TestCase):
                                 self.assertIn(b"Knowledge MCP", response.read())
                         with urllib.request.urlopen(url + "/dashboard/services") as response:
                             self.assertEqual(response.geturl(), url + "/dashboard")
+                        with urllib.request.urlopen(url + "/dashboard/access") as response:
+                            self.assertEqual(response.geturl(), url + "/dashboard/settings")
 
                         def post(route, body, cookie=""):
                             headers = {"Content-Type": "application/json", "X-Control-Token": app.TOKEN}

@@ -2,9 +2,9 @@ const $ = id => document.getElementById(id);
 let current = null, policy = null, wizardStep = 0, authRequired = false, folderPaths = [], eligibleFiles = [];
 let messageTimer = null, refreshError = null;
 let modelRenderKey = '';
-const setupLabels = ['Dashboard access', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
+const setupLabels = ['Settings', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
 const setupPaths = ['/setup/login', '/setup/health', '/setup/folders', '/setup/policy', '/setup/eligible', '/setup/dry-run', '/setup/indexing'];
-const dashboardPages = ['overview', 'indexing', 'folders', 'policy', 'access'];
+const dashboardPages = ['overview', 'indexing', 'folders', 'policy', 'settings'];
 
 async function api(path, data) {
   const options = data === undefined ? {} : {
@@ -402,7 +402,7 @@ function goDashboardPage(page, push = false) {
   if (chosen === 'indexing') goIndexPage(location.pathname === '/dashboard/indexing/model' ? 'model' : 'run');
 }
 function syncRoute(status) {
-  if (!status.config.onboarding_complete) {
+  if (!status.config.onboarding_complete && location.pathname !== '/dashboard/settings') {
     const available = Math.max(0, Math.min(6, status.config.setup_step || 0));
     const requested = setupPaths.indexOf(location.pathname);
     const step = requested < 0 ? available : Math.min(requested, available);
@@ -545,8 +545,10 @@ async function refresh() {
     $('dry-run-button').disabled = s.index_running;
     $('initial-index-button').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
     $('skip-initial-index').disabled = s.index_running;
-    $('wizard').classList.toggle('hidden', s.config.onboarding_complete); $('dashboard').classList.toggle('hidden', !s.config.onboarding_complete);
-    $('setup-progress-card').classList.toggle('hidden', s.config.onboarding_complete);
+    const showSetup = !s.config.onboarding_complete && location.pathname !== '/dashboard/settings';
+    $('wizard').classList.toggle('hidden', !showSetup); $('dashboard').classList.toggle('hidden', showSetup);
+    $('setup-progress-card').classList.toggle('hidden', !showSetup);
+    $('settings-back-to-setup').classList.toggle('hidden', Boolean(s.config.onboarding_complete));
     $('dashboard-nav').classList.toggle('hidden', !s.config.onboarding_complete);
     refreshError = null;
   } catch (e) {

@@ -145,7 +145,7 @@ See [Docker deployment notes](docs/docker.md) for volume mappings, updates, and 
 | **Document folders → Documents and sync** | Add or remove folders and request synchronization |
 | **Document folders → Schedule** | Set the update interval; `0` disables scheduled indexing |
 | **Indexing policy** | Choose allowed file types and exclusions |
-| **Dashboard access** | Enable, change, or disable the dashboard password |
+| **Settings** | Manage the dashboard password, download backups, and restore saved data |
 
 Indexing shows the current stage, document count, and progress. At completion, the date and final count appear together. The full output and timestamped status log are available to download.
 
@@ -211,7 +211,7 @@ Recreate the companion whenever you recreate the app: it joins the app container
 
 ## Backup and restore
 
-Use **Download backup** to save a `.tar.gz` archive. On the destination instance, choose the file and select **Import backup and replace data**. This is available during setup as well as after onboarding.
+Open **Settings → Backup and restore** and use **Download backup** to save a `.tar.gz` archive. On the destination instance, open Settings, choose the file and select **Import backup and replace data**. The setup screen also links to Settings, so you can restore before onboarding.
 
 - **Included:** settings, indexing policy and state, Qdrant indexes, synchronized documents, and the companion connection.
 - **Excluded:** downloaded model caches, external source folders, Docker mounts, port/GPU settings, and custom environment variables.

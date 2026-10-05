@@ -75,6 +75,30 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
 
 const legacy = {source_selection: 'auto', source_mode: 'host_agent', source_root: '/data/host-documents', host_root: '', setup_step: 2, folders: []};
 
+test('Settings is a dedicated page that can restore a backup before onboarding', async () => {
+  const {context, elements, panels, location} = dashboard(legacy, false, '/dashboard/settings');
+  await vm.runInContext('refresh()', context);
+  assert.equal(location.pathname, '/dashboard/settings');
+  assert.equal(panels.find(p => p.classList.contains('active')).dataset.page, 'settings');
+  assert.equal(elements.dashboard.classList.contains('hidden'), false);
+  assert.equal(elements.wizard.classList.contains('hidden'), true);
+  assert.equal(elements['setup-progress-card'].classList.contains('hidden'), true);
+  assert.equal(elements['settings-back-to-setup'].classList.contains('hidden'), false);
+  location.pathname = '/';
+  await vm.runInContext('refresh()', context);
+  assert.equal(location.pathname, '/setup/folders');
+  assert.equal(elements.dashboard.classList.contains('hidden'), true);
+  assert.equal(elements.wizard.classList.contains('hidden'), false);
+
+  const completed = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
+  for (const page of ['settings', 'overview', 'indexing', 'folders', 'policy']) {
+    vm.runInContext(`goDashboardPage('${page}', true)`, completed.context);
+    await vm.runInContext('refresh()', completed.context);
+    assert.equal(completed.panels.find(p => p.dataset.page === 'settings').classList.contains('active'), page === 'settings');
+  }
+  assert.equal(completed.elements['settings-back-to-setup'].classList.contains('hidden'), true);
+});
+
 test('Indexing has separate model and run pages with stable direct links', async () => {
   const {context, indexPanels, indexLinks, location} = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
   await vm.runInContext('refresh()', context);

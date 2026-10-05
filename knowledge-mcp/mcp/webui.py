@@ -46,7 +46,7 @@ HTML = Path(__file__).with_name("webui.html")
 SCRIPT = Path(__file__).with_name("app.js")
 TOKEN = secrets.token_urlsafe(32)
 SETUP_PATHS = ("/setup/login", "/setup/health", "/setup/folders", "/setup/policy", "/setup/eligible", "/setup/dry-run", "/setup/indexing")
-DASHBOARD_PATHS = ("/dashboard", "/dashboard/indexing", "/dashboard/indexing/model", "/dashboard/folders", "/dashboard/policy", "/dashboard/access")
+DASHBOARD_PATHS = ("/dashboard", "/dashboard/indexing", "/dashboard/indexing/model", "/dashboard/folders", "/dashboard/policy", "/dashboard/settings")
 
 
 def validate_source_root(value):
@@ -1176,9 +1176,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._allowed_host():
             self.send(403, json.dumps({"error": "Host not allowed"}))
             return
-        if self.path == "/dashboard/services":
+        if self.path in ("/dashboard/services", "/dashboard/access"):
             self.send_response(302)
-            self.send_header("Location", "/dashboard")
+            self.send_header("Location", "/dashboard/settings" if self.path == "/dashboard/access" else "/dashboard")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
