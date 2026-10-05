@@ -179,6 +179,20 @@ class CoreFlowTest(unittest.TestCase):
                 ingest.main()
                 self.assertEqual(state_file.read_bytes(), unchanged_state)
 
+                baseline = client.count(ingest.COLLECTION_NAME).count
+                client.upsert(ingest.COLLECTION_NAME, [ingest.PointStruct(id=0, vector=[1.0, 0.0, 0.0], payload={"document_id": "stale"})])
+                client.create_collection('other_model', vectors_config=ingest.VectorParams(size=3, distance=ingest.Distance.COSINE))
+                client.upsert('other_model', [ingest.PointStruct(id=1, vector=[1.0, 0.0, 0.0])])
+                with patch.object(sys, 'argv', ['ingest.py', '--rebuild', '--limit', '1']), self.assertRaises(SystemExit):
+                    ingest.main()
+                self.assertEqual(client.count(ingest.COLLECTION_NAME).count, baseline + 1)
+                with patch.object(sys, 'argv', ['ingest.py', '--rebuild']), patch.object(FakeModel, 'encode', side_effect=FakeModel().encode) as encode:
+                    ingest.main()
+                    encode.assert_called_once()
+                self.assertEqual(client.count(ingest.COLLECTION_NAME).count, baseline)
+                self.assertEqual(client.count('other_model').count, 1)
+                self.assertFalse(client.retrieve(ingest.COLLECTION_NAME, ids=[0]))
+
                 retrieval.client = client
                 retrieval.CORPUS = None
                 retrieval.model = FakeModel()
@@ -191,6 +205,9 @@ class CoreFlowTest(unittest.TestCase):
                 ingest.main()
                 self.assertEqual(len(json.loads(state_file.read_text(encoding="utf-8"))["documents"]), 1)
                 source.unlink()
+                with patch.object(sys, 'argv', ['ingest.py', '--rebuild']), self.assertRaises(SystemExit):
+                    ingest.main()
+                self.assertGreater(client.count(ingest.COLLECTION_NAME).count, 0)
                 with self.assertRaises(SystemExit):
                     ingest.main()
                 self.assertGreater(client.count(ingest.COLLECTION_NAME).count, 0)

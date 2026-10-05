@@ -18,6 +18,26 @@ The app stores Qdrant data at `/qdrant/storage`. Settings, ingestion state, the 
 
 For the README's `docker run` installation, update by stopping and removing the host agent first, then the app container; pull the new image and repeat both README commands. Keep the three named volumes. Recreate the agent whenever you recreate the app container because it joins the app container's network namespace.
 
+Keep the same Compose project name and volume mappings when updating. Do not use `docker compose down -v` or delete/prune the application's volumes: that removes the saved data.
+
+## Downloading and importing a backup
+
+The Web UI offers **Backup and restore**, also during onboarding on a new instance. Choose **Download backup**, then import the `.tar.gz` archive on another installation of the same app version with bundled Qdrant and the same automatic host agent configuration. Wait for indexing, scans and document synchronization to finish first. Qdrant and MCP stop while creating the archive and resume afterwards. The browser downloads directly to disk; the temporary download link expires after ten minutes and can be used once. Creating another backup discards the previous unused download. Restore checks the complete gzip checksum, volume layout, Qdrant version, application settings, credentials and indexing policy before replacing data; an installation error rolls back the file moves. The web process then restarts inside the same container, keeping the host agent's shared network connected. Reload the page and use the dashboard password saved in the backup.
+
+The archive contains `/data` (settings, policy, ingestion state, synchronized documents and login records), `/qdrant/storage` (all indexed models' collections), and the configured automatic host agent directory. It omits the downloaded model cache; models download again when needed, without rebuilding the saved vectors. External read-only document mounts, source folders on the host, Docker port/GPU settings and custom environment variables are not copied. Recreate those mounts/settings and ensure the configured host folder paths exist before enabling synchronization or indexing on the destination. Updating within one installation only needs the existing volumes; importing a backup is for migration or recovery.
+
+Backups contain private documents and agent credentials and are not encrypted. Store them privately and import only trusted archives. Uploads and extracted contents are limited to 100 GiB and 250,000 archive entries; export enforces the same file count and extracted size limits. Allow space for the compressed archive in the container's temporary directory and extracted data alongside the current volumes. Qdrant storage backups require the exact Qdrant version recorded in the archive; restore into the same app version first, then update normally. Unsupported backup formats are rejected. An interrupted restore (host crash/power loss) is not transactional across the three Docker volumes; retain the original archive for recovery.
+
+From a Linux repository checkout, verify backup/restore with the image's real Qdrant binary in an isolated container (no application volumes or host documents mounted):
+
+```bash
+docker run --rm --entrypoint python -v "$PWD:/tests:ro" \
+  paoloronco/knowledge-mcp:latest \
+  -m unittest discover -s /tests/tests -p test_backup.py
+```
+
+This check creates test vectors in two collections, exports them, removes one collection, restores the archive and queries both collections again. Without a Qdrant binary, ordinary local Python tests skip this integration check; set `QDRANT_TEST_BINARY` to an installed binary to run it locally.
+
 ## Switching an existing `docker run` installation to Compose
 
 The README's `docker run` commands use volumes named `knowledge_app`, `knowledge_qdrant`, and `knowledge_agent`. To reuse them in Compose, create `compose.override.yaml` beside `compose.yaml`:

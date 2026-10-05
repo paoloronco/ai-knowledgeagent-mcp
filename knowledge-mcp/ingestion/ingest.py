@@ -442,11 +442,15 @@ def make_point_id(document_hash, section_index, chunk_index):
     )
 
 
-def ensure_collection(client, vector_size):
+def ensure_collection(client, vector_size, rebuild=False):
     existing = {
         collection.name
         for collection in client.get_collections().collections
     }
+
+    if rebuild and COLLECTION_NAME in existing:
+        client.delete_collection(COLLECTION_NAME)
+        existing.remove(COLLECTION_NAME)
 
     if COLLECTION_NAME not in existing:
         client.create_collection(
@@ -483,10 +487,13 @@ def main():
         action="store_true",
         help="Allow an empty source to remove all indexed documents.",
     )
+    parser.add_argument("--rebuild", action="store_true", help="Recreate the selected model's collection and index every eligible document.")
 
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be greater than zero")
+    if args.rebuild and (args.dry_run or args.limit is not None):
+        parser.error("--rebuild cannot be combined with --dry-run or --limit")
     if not 0 <= CHUNK_OVERLAP < CHUNK_SIZE:
         parser.error("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
 
@@ -527,6 +534,8 @@ def main():
             log_error(path, exc, "hashing")
         write_progress("hashing", count, len(candidates))
     write_progress("hashing", len(candidates), len(candidates), force=True)
+    if args.rebuild and hash_failures:
+        raise SystemExit("Some documents could not be read; the index was not rebuilt.")
 
     unique_documents = [
         (digest, paths)
@@ -611,11 +620,13 @@ def main():
 
     client = QdrantClient(url=QDRANT_URL)
 
-    collection_created = ensure_collection(client, model.get_sentence_embedding_dimension())
+    collection_created = ensure_collection(client, model.get_sentence_embedding_dimension(), rebuild=args.rebuild)
 
-    state = load_state()
+    state = {"documents": {}} if args.rebuild else load_state()
     if collection_created or client.count(COLLECTION_NAME, exact=True).count == 0:
         state = {"documents": {}}
+    if args.rebuild:
+        save_state(state)
 
     indexed_documents = 0
     skipped_documents = 0

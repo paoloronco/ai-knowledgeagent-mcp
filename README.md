@@ -1,12 +1,37 @@
 # Knowledge MCP
 
-![Currently under development](https://img.shields.io/badge/status-Currently%20under%20development-orange)
+![Under development](https://img.shields.io/badge/status-under%20development-orange)
 
-Search your documents through an MCP server. The Docker image includes the dashboard, ingestion service, MCP server, and Qdrant. Use the dashboard to select a document root, configure indexing, schedule updates, and manage services.
+Give your AI client access to the documents you choose. Knowledge MCP indexes your files and provides an MCP search tool that returns relevant passages, source paths, and page or slide references when available.
+
+Embeddings and search run locally. The Docker image includes a browser dashboard, the indexing service, the MCP server, and Qdrant.
+
+## Features
+
+- **Web dashboard:** select folders, choose a model, follow indexing progress, and manage services.
+- **MCP search:** combine semantic search with keyword matching and return passages with their sources.
+- **Bundled Qdrant:** store document vectors without deploying a separate database container.
+- **Document formats:** PDF, Word (`.docx`), PowerPoint (`.pptx`), Markdown, plain text, and HTML.
+- **Incremental indexing:** process changed documents, remove deleted documents from the index, and schedule updates. A full rebuild is also available.
+- **Local embedding models:** multilingual E5 small, E5 base, and BGE-M3, with CPU or NVIDIA GPU execution.
+- **Backup and restore:** export settings and saved indexes, then import them on another instance.
+- **Read-only source access:** the Linux companion reads host folders and synchronizes eligible files into the app's storage.
+
+### Addresses
+
+Replace `HOST_IP` with the IP address or hostname of the machine running Docker.
+
+| Service | Address | Purpose |
+| --- | --- | --- |
+| Dashboard | `http://HOST_IP:8080` | Setup and administration |
+| MCP | `http://HOST_IP:8000/mcp` | Connect an MCP-compatible client after indexing and starting MCP |
+| Qdrant | `127.0.0.1:6333` inside the app container | Internal vector database; no host port is published |
 
 ## Docker image
 
-Download the image, then start the complete application on a Linux Docker host:
+The commands below use Docker Engine on a **Linux host or NAS**. Start the app first, then its companion.
+
+### Standard image — CPU
 
 ```bash
 docker pull paoloronco/knowledge-mcp:latest
@@ -19,9 +44,14 @@ docker run -d --name knowledge-mcp --restart unless-stopped \
   paoloronco/knowledge-mcp:latest
 ```
 
-Open `http://HOST_IP:8080` for the Web UI. Qdrant stays on container loopback; port 8000 serves MCP after onboarding and indexing. The named volumes preserve settings, documents, model cache, and Qdrant data. Docker restarts the container after a process failure or host reboot; the app also restarts a failed Qdrant or enabled MCP child process. Review the [indexing policy](knowledge-mcp/mcp/index-policy.yaml) before indexing.
+- Open the dashboard at `http://HOST_IP:8080`.
+- Qdrant starts with the app. Start MCP from the dashboard after indexing.
+- The named volumes retain settings and indexes when you recreate the container.
+- Docker restarts the containers after a host reboot, unless you stopped them manually.
 
-To let the Web UI select folders on the Linux host, install its companion container with this **one command on the same host**:
+### Companion — access folders on the Linux host
+
+The companion lets you enter host paths such as `/mnt/documents` in the dashboard. Run it on the same machine as the app:
 
 ```bash
 docker run -d --name knowledge-mcp-host-agent --restart unless-stopped \
@@ -38,11 +68,18 @@ docker run -d --name knowledge-mcp-host-agent --restart unless-stopped \
   python host_agent.py run --config /run/host-agent/agent.json --host-root /host --log-stdout
 ```
 
-Both containers use `paoloronco/knowledge-mcp:latest`, but have separate names and roles: `knowledge-mcp` runs the Web UI, MCP, and Qdrant; `knowledge-mcp-host-agent` runs `host_agent.py`, reads the Linux host through `/host`, and shares the app container's network. The [Compose deployment](docs/docker.md#linuxnas-deployment) uses the same names and roles.
+- It reads the selected folders, applies the indexing policy, and copies eligible files into the app volume.
+- The host filesystem is mounted read-only; `/proc`, `/sys`, `/dev`, and `/run` are masked.
+- It shares the app's network and connection volume. It publishes no ports and uses no Docker socket.
+- Folder changes in the dashboard do not require editing the Docker command.
 
-### NVIDIA GPU
+In the CPU setup, both containers use `:latest`: `knowledge-mcp` runs the application; `knowledge-mcp-host-agent` runs the companion.
 
-On a Linux Docker host with an NVIDIA driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html), use the `:cuda` image for the **app container** and add `--gpus all` to its `docker run` command:
+If your documents are already mounted inside the app container, select **Folder already mounted inside the container** in the dashboard. See [read-only document mounts](docs/docker.md#compose-with-an-existing-document-folder) for that setup, including Windows paths. The Linux companion command does not provide native Windows or macOS filesystem access.
+
+### NVIDIA GPU — CUDA image
+
+Install an NVIDIA driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the Linux Docker host. Then use `:cuda` and `--gpus all` for the app:
 
 ```bash
 docker pull paoloronco/knowledge-mcp:cuda
@@ -55,35 +92,220 @@ docker run -d --name knowledge-mcp --restart unless-stopped --gpus all \
   paoloronco/knowledge-mcp:cuda
 ```
 
-The host agent command above stays on `:latest` and needs no GPU. For Compose, run `docker compose -f compose.yaml -f compose.gpu.yaml up -d`. To switch an existing installation, recreate the containers while keeping the same named volumes as described in [deployment notes](docs/docker.md); your indexing and settings remain in those volumes. Verify host GPU access with `docker run --rm --gpus all ubuntu nvidia-smi`. The dashboard shows the detected device, driver, free/total VRAM, CUDA availability, and whether embeddings use GPU or CPU. The CUDA image also runs on CPU if Docker exposes no GPU; set `EMBEDDING_DEVICE=cpu` to force CPU or `EMBEDDING_DEVICE=cuda` to fail fast when CUDA is unavailable.
+- The companion still uses `:latest`; it needs no GPU.
+- The dashboard shows the GPU, driver, available memory, and whether CUDA is usable.
+- The CUDA image falls back to CPU if no GPU is available.
+- Add `-e EMBEDDING_DEVICE=cpu` to force CPU, or `-e EMBEDDING_DEVICE=cuda` to require CUDA.
 
-The companion reads the selected Linux folder through a read-only host mount, applies the indexing policy, and synchronizes eligible documents into the app volume. It exposes no port and needs no Docker socket. Select a folder such as `/mnt/documents` in the Web UI; dashboard login is optional. See [deployment and migration notes](docs/docker.md) for updates and the alternative Compose setup.
+For an existing installation, follow [the update steps](#update-without-losing-data) before switching images. Keep the same volumes.
 
-The exact bare command `docker run paoloronco/knowledge-mcp` starts only an isolated foreground container. An image cannot set the host's published ports, mounts, or restart policy; Docker requires those options at container creation. See Docker's [port publication](https://docs.docker.com/get-started/docker-concepts/running-containers/publishing-ports/) and [restart policy](https://docs.docker.com/engine/containers/start-containers-automatically/) documentation.
+<details>
+<summary>Check that Docker can access the GPU</summary>
 
-## Dashboard
+```bash
+docker run --rm --gpus all ubuntu nvidia-smi
+```
 
-Once the application has been deployed with networking and document access configured:
+</details>
 
-- Open `http://HOST_IP:8080`.
-- Onboarding guides you through optional dashboard login, service checks, document folder selection, the [indexing policy](knowledge-mcp/mcp/index-policy.yaml), a manual document scan, a dry-run test, and initial indexing. Each step has its own URL under `/setup/` (for example, `/setup/folders` and `/setup/eligible`), so you can reload or bookmark the current step. If you skip login, anyone who can reach port 8080 can manage the dashboard.
-- Enter a folder path such as `/mnt/documents` and click **+**. The app checks access before adding it to the list; you can add or remove multiple folders that share a non-root parent. With the host agent connected, paths refer to folders on the Linux host.
-- After saving the policy, press **Scan** to view the eligible count and a preview. **View all eligible documents** opens the full list and offers TXT, LOG, and JSON downloads. The dry run starts only after the scan finds eligible documents.
-- In **Initial indexing**, choose an embedding model for your hardware and document mix. The same selection is available later at `/dashboard/indexing`. E5 small is the CPU-friendly default; E5 base needs more resources; BGE-M3 is the heaviest option. The cards show vector dimensions and qualitative resource guidance, not benchmark guarantees. The `:latest` image uses CPU and the `:cuda` image uses an exposed NVIDIA GPU automatically; each model downloads on first indexing and is cached in the persistent app volume.
-- Initial indexing opens the dedicated indexing page with live stage, document count, percentage where available, and the log. While it runs, **Go to dashboard** lets you use the other pages; `/dashboard` also shows the current stage and progress, and **Open indexing details** returns to the full log. You can also select **Skip for now** to open `/dashboard` and start initial indexing later from `/dashboard/indexing`. The dashboard sections have separate `/dashboard/…` URLs.
-- The Indexing page offers downloads for the complete output log and a timestamped status log. Document errors show their source path and reason. Fix the source or choose **Ignore this file** to add its relative path to the indexing policy, then use **Retry incremental update**; unchanged documents are skipped. Older runs still expose their full log and recent entries from the existing error log, while the status log starts with the next run.
-- Changing models keeps the searchable index on the previous model until the new indexing run succeeds. Each choice has its own Qdrant collection and ingestion state. Returning to a previously indexed model updates its existing index; retaining multiple models uses additional disk space. The dry run checks parsing only and does not download or evaluate a model. BGE-M3 uses dense vectors in this app, with the same short document chunks as the other profiles.
-- After initial indexing completes, start the MCP server from the dashboard. The endpoint is available at `http://HOST_IP:8000/mcp`. Add an authenticated proxy or Cloudflare Access before exposing it beyond a trusted LAN.
-- The main `/dashboard` page shows service health and Qdrant/MCP controls. Document folder sync status and scheduling live under `/dashboard/folders`; use `/dashboard/indexing` for indexing progress and updates.
-- Persistent Docker volumes retain documents, settings, indexing state, the model cache, Qdrant data, and the agent connection across container updates.
+### Docker Compose
 
-Model specifications: [multilingual E5 small](https://huggingface.co/intfloat/multilingual-e5-small), [multilingual E5 base](https://huggingface.co/intfloat/multilingual-e5-base), and [BGE-M3](https://huggingface.co/BAAI/bge-m3). Compare relevance on your own queries and documents before settling on a model.
+If you prefer Compose, clone the repository and run these commands from its root:
 
-## More information
+```bash
+docker compose up -d
+```
 
-- [Docker deployment and migration notes](docs/docker.md)
-- [Service and manual Python setup](knowledge-mcp/README.md)
-- [Architecture, security, and troubleshooting](docs/README.md)
+For the CUDA image:
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml up -d
+```
+
+See [Docker deployment notes](docs/docker.md) for volume mappings, updates, and migration from a `docker run` installation.
+
+## Use the dashboard
+
+### First setup
+
+1. Open `http://HOST_IP:8080` and choose whether to enable dashboard login.
+2. Add your document folders. With the companion, use paths on the Linux host, such as `/mnt/documents`.
+3. Review the indexing policy: file types, size limits, and excluded paths.
+4. Run **Scan** to check eligible files, then the **Dry-run test** to check document parsing.
+5. Choose an embedding model and start **Initial indexing**. You can also select **Skip for now** and index later.
+6. Once indexing succeeds, open **Dashboard → MCP server → Start** and connect your client to `http://HOST_IP:8000/mcp`.
+
+### Sections
+
+| Section | What you can do |
+| --- | --- |
+| **Dashboard** | Check service health and start, stop, or restart Qdrant and MCP |
+| **Indexing → Embedding model** | Select the model for the next indexing run |
+| **Indexing → Indexing** | Run a dry test, update incrementally, rebuild, inspect errors, and download logs |
+| **Document folders → Documents and sync** | Add or remove folders and request synchronization |
+| **Document folders → Schedule** | Set the update interval; `0` disables scheduled indexing |
+| **Indexing policy** | Choose allowed file types and exclusions |
+| **Dashboard access** | Enable, change, or disable the dashboard password |
+
+Indexing shows the current stage, document count, and progress. At completion, the date and final count appear together. The full output and timestamped status log are available to download.
+
+If a document fails, fix its source or use **Ignore this file**, then retry the incremental update. Successfully indexed documents stay saved.
+
+#### Rebuild from scratch
+
+- Recreates the selected model's index and processes every eligible document again.
+- Requires confirmation and pauses MCP search.
+- Keeps source files and other models' indexes.
+- A failed rebuild can leave a partial index. Review the errors and retry incrementally.
+
+### Embedding models
+
+| Model | Vector dimensions | CPU and memory demand |
+| --- | --- | --- |
+| [E5 multilingual small](https://huggingface.co/intfloat/multilingual-e5-small) | 384 | Lowest; the default |
+| [E5 multilingual base](https://huggingface.co/intfloat/multilingual-e5-base) | 768 | Medium |
+| [BGE-M3](https://huggingface.co/BAAI/bge-m3) | 1024 | Highest |
+
+- Models download on first use and remain cached in the app volume.
+- Each model has a separate index. Search switches to a newly selected model after a successful indexing run.
+- Switching back reuses that model's index. Keeping several indexes uses more disk space.
+- The dry run checks parsing only; it does not load the embedding model.
+- BGE-M3 uses dense vectors in this app. The resource labels are relative guidance, not benchmark results.
+
+## Update without losing data
+
+For the `docker run` installation above:
+
+1. Pull the CPU/companion image:
+
+   ```bash
+   docker pull paoloronco/knowledge-mcp:latest
+   ```
+
+   If your app uses CUDA, also pull:
+
+   ```bash
+   docker pull paoloronco/knowledge-mcp:cuda
+   ```
+
+2. Stop and remove the companion, then the app container:
+
+   ```bash
+   docker stop -t 30 knowledge-mcp-host-agent
+   docker rm knowledge-mcp-host-agent
+   docker stop -t 30 knowledge-mcp
+   docker rm knowledge-mcp
+   ```
+
+3. Repeat the app and companion commands from [Docker image](#docker-image), using the **same named volumes**.
+
+Recreate the companion whenever you recreate the app: it joins the app container's network.
+
+| Volume | Saved data |
+| --- | --- |
+| `knowledge_app` | Settings, indexing policy and state, synchronized documents, model cache, and dashboard login |
+| `knowledge_qdrant` | Qdrant indexes for all models |
+| `knowledge_agent` | Companion connection credentials |
+
+**Keep these volumes.** Removing the containers preserves them; deleting the volumes removes your saved data. Compose users should follow the [Compose update instructions](docs/docker.md#linuxnas-deployment).
+
+## Backup and restore
+
+Use **Download backup** to save a `.tar.gz` archive. On the destination instance, choose the file and select **Import backup and replace data**. This is available during setup as well as after onboarding.
+
+- **Included:** settings, indexing policy and state, Qdrant indexes, synchronized documents, and the companion connection.
+- **Excluded:** downloaded model caches, external source folders, Docker mounts, port/GPU settings, and custom environment variables.
+- Wait for indexing and synchronization to finish. Search pauses during export.
+- Restore replaces the destination's data and restarts the app. Use the dashboard password saved in the backup.
+- Restore to the same app version and storage layout first. The Qdrant version must match the version recorded in the archive.
+- Make the original source paths available on the destination before resuming synchronization or indexing.
+
+The archive contains documents and credentials and is **not encrypted**. Keep it private. See [backup and migration details](docs/docker.md#downloading-and-importing-a-backup) for validation, limits, and recovery.
+
+## Install from source / use the code
+
+Use this setup to run ingestion and the MCP server directly in Python. Qdrant runs separately.
+
+### Requirements
+
+- Python 3.10 or newer.
+- Qdrant reachable at `http://127.0.0.1:6333`.
+- An existing document directory, readable by your user.
+
+### Install and configure
+
+The commands below use Bash:
+
+```bash
+git clone https://github.com/paoloronco/knowledge-mcp.git knowledge-mcp-src
+cd knowledge-mcp-src/knowledge-mcp
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+On Windows PowerShell, use `.venv\Scripts\Activate.ps1` to activate the environment and `Copy-Item .env.example .env` to copy the configuration.
+
+Edit `.env`:
+
+```dotenv
+KNOWLEDGE_ROOT=/absolute/path/to/documents
+QDRANT_URL=http://127.0.0.1:6333
+MCP_HOST=127.0.0.1
+MCP_PORT=8000
+```
+
+Review [index-policy.yaml](knowledge-mcp/mcp/index-policy.yaml) before running ingestion. Both ingestion and the server load `.env` from the `knowledge-mcp/` service directory.
+
+<details>
+<summary>Start a local Qdrant instance with Docker</summary>
+
+This uses the same Qdrant version as the app's [Dockerfile](knowledge-mcp/Dockerfile):
+
+```bash
+docker run -d --name knowledge-qdrant --restart unless-stopped \
+  -p 127.0.0.1:6333:6333 \
+  -v knowledge_source_qdrant:/qdrant/storage \
+  qdrant/qdrant:v1.19.1
+```
+
+</details>
+
+### Index and start MCP
+
+From the service directory:
+
+```bash
+python ingestion/ingest.py --dry-run --limit 10
+python ingestion/ingest.py
+python mcp/server.py
+```
+
+The endpoint is `http://127.0.0.1:8000/mcp`. Restart the server after subsequent ingestion runs so its cached search data includes the changes.
+
+### Code map
+
+| File | Role |
+| --- | --- |
+| [ingestion/ingest.py](knowledge-mcp/ingestion/ingest.py) | Parse documents, create embeddings, and update Qdrant |
+| [mcp/server.py](knowledge-mcp/mcp/server.py) | Expose the MCP tools over Streamable HTTP |
+| [mcp/retrieval.py](knowledge-mcp/mcp/retrieval.py) | Search and rank document passages |
+| [mcp/webui.py](knowledge-mcp/mcp/webui.py) | Dashboard API and service management |
+| [mcp/index-policy.yaml](knowledge-mcp/mcp/index-policy.yaml) | File selection and exclusions |
+
+## Access and document privacy
+
+- Dashboard login is optional. Without it, anyone who can reach port 8080 can administer the app.
+- The MCP endpoint has no built-in HTTP authentication. Use an authenticated proxy or [Cloudflare Access](docs/cloudflare-access.md) before exposing it beyond a trusted LAN.
+- Review the indexing policy before adding documents. Credential redaction is best effort; do not rely on it to make sensitive files safe to index.
+
+## Documentation
+
+- [Docker deployment, updates, and migration](docs/docker.md)
+- [Architecture](docs/architecture.md)
+- [Retrieval behavior](docs/retrieval.md)
+- [Security model](docs/security-model.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [AI client examples](AI/README.md)
-
-This repository contains no private documents, credentials, or Qdrant data. It does not yet have a LICENSE file.
+- [Linux service deployment](knowledge-mcp/mcp/deployment/README.md)

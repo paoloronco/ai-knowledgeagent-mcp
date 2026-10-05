@@ -212,6 +212,7 @@ class AdminBoundaryTest(unittest.TestCase):
 
     def test_failed_services_restart_only_while_enabled(self):
         controller = object.__new__(app.Controller)
+        controller.ingest = None
         controller.config = {"qdrant_enabled": True, "mcp_enabled": True}
         controller.qdrant = Mock()
         controller.qdrant.poll.return_value = 1
@@ -227,10 +228,49 @@ class AdminBoundaryTest(unittest.TestCase):
             start_mcp.assert_called_once_with()
             start_qdrant.reset_mock()
             start_mcp.reset_mock()
+            controller.ingest = Mock()
+            controller.ingest.poll.return_value = None
+            controller._restart_failed_services()
+            start_mcp.assert_not_called()
+            start_qdrant.reset_mock()
+            controller.ingest = None
             controller.config["qdrant_enabled"] = False
             controller._restart_failed_services()
             start_qdrant.assert_not_called()
             start_mcp.assert_not_called()
+
+    def test_rebuild_pauses_search_and_resumes_it_after_an_indexing_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / 'data'
+            documents = data / 'documents'
+            with (
+                patch.object(app, 'DATA', data), patch.object(app, 'SOURCE', documents),
+                patch.object(app, 'MANAGED_SOURCE', documents), patch.object(app, 'HOST_SOURCE', data / 'host-documents'),
+                patch.object(app, 'CONFIG', data / 'config.json'), patch.object(app, 'POLICY', data / 'index-policy.yaml'),
+                patch.object(app, 'AGENT_MANIFEST', data / 'agent-manifest.json'), patch.object(app, 'AUTO_AGENT_CONFIG', None),
+                patch.object(app.Controller, '_schedule', lambda self: None),
+            ):
+                controller = app.Controller()
+                controller.config.update(source_mode='container', source_root=str(documents), folders=[''], onboarding_complete=True, setup_step=7, mcp_enabled=True, active_embedding_model='e5-small', embedding_model='bge-m3')
+                process = Mock()
+                process.poll.return_value = None
+                process.wait.return_value = 1
+                with patch.object(app.subprocess, 'Popen', return_value=process) as spawn, patch.object(app.threading, 'Thread'), patch.object(controller, '_stop_mcp') as stop, patch.object(controller, '_start_mcp') as start:
+                    with self.assertRaisesRegex(ValueError, 'cannot be a dry run'):
+                        controller.run_index(dry_run=True, rebuild=True)
+                    spawn.assert_not_called()
+                    controller.run_index(rebuild=True)
+                    self.assertIn('--rebuild', spawn.call_args.args[0])
+                    self.assertEqual(spawn.call_args.kwargs['env']['DENSE_COLLECTION'], MODELS['bge-m3']['collection'])
+                    stop.assert_called_once()
+                    controller._restart_failed_services()
+                    start.assert_not_called()
+                    process.poll.return_value = 1
+                    controller._finish_index(process, False)
+                    start.assert_called_once()
+                    self.assertEqual(controller.config['active_embedding_model'], 'e5-small')
+                controller.config['mcp_enabled'] = False
+                controller.close()
 
     def test_saved_policy_recovers_required_directory_exclusions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -515,7 +555,8 @@ class AdminBoundaryTest(unittest.TestCase):
                             page = response.read().decode()
                             self.assertIn(app.TOKEN, page)
                             self.assertIn('lang="en"', page)
-                            self.assertNotIn('type="file"', page)
+                            self.assertEqual(page.count('type="file"'), 1)
+                            self.assertIn('id="backup-file" type="file" accept=".tar.gz,application/gzip"', page)
                         lan = urllib.request.Request(url, headers={"Host": "10.10.10.80:8080"})
                         with urllib.request.urlopen(lan) as response:
                             self.assertEqual(response.status, 200)

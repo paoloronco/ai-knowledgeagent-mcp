@@ -14,6 +14,31 @@ async function api(path, data) {
   if (!response.ok) throw Error(body.error || 'Request failed');
   return body;
 }
+async function downloadBackup() {
+  $('backup-download').disabled = true;
+  $('backup-status').textContent = 'Creating backup. Search is temporarily paused…';
+  try {
+    const result = await api('/api/backup', {}), link = document.createElement('a');
+    link.href = result.url; link.download = 'knowledge-mcp-backup.tar.gz';
+    link.click();
+    $('backup-status').textContent = 'Backup ready. Download started; search has resumed.';
+  } catch (e) { $('backup-status').textContent = e.message; }
+  finally { $('backup-download').disabled = false; }
+}
+async function restoreBackup() {
+  const file = $('backup-file').files[0];
+  if (!file) { $('backup-status').textContent = 'Select a backup archive first.'; return; }
+  if (!confirm('Replace all settings, documents and indexes on this instance with the backup? The app will restart and use the saved dashboard password.')) return;
+  $('backup-restore').disabled = true;
+  $('backup-status').textContent = 'Uploading and validating backup…';
+  try {
+    const response = await fetch('/api/restore', {method: 'POST', headers: {'Content-Type': 'application/gzip', 'X-Control-Token': token}, body: file});
+    const result = await response.json();
+    if (!response.ok) throw Error(result.error || 'Restore failed');
+    $('backup-status').textContent = 'Backup restored. The app is restarting; reload this page shortly and use the saved password.';
+  } catch (e) { $('backup-status').textContent = e.message; }
+  finally { $('backup-restore').disabled = false; }
+}
 function message(value, error = false) {
   clearTimeout(messageTimer);
   const notice = $('message');
@@ -226,8 +251,9 @@ async function savePolicy(advance) {
 }
 async function saveYaml() { try { await api('/api/policy', {content: $('policy-yaml').value}); await loadPolicy(); message('YAML saved.'); } catch (e) { message(e.message, true); } }
 async function service(name, action) { try { await api('/api/service', {name, action}); message(`${name}: ${action} requested.`); await refresh(); } catch (e) { message(e.message, true); } }
-async function runIndex(dry_run) {
-  try { await api('/api/index', {dry_run}); message(dry_run ? 'Dry run started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
+async function runIndex(dry_run, rebuild = false) {
+  if (rebuild && !confirm('Rebuild the selected model’s index from scratch? Existing vectors for this model will be replaced and search will pause during indexing. Documents and other models’ indexes are kept.')) return;
+  try { await api('/api/index', {dry_run, rebuild}); message(dry_run ? 'Dry run started.' : rebuild ? 'Full rebuild started.' : 'Indexing started.'); if (dry_run) $('dry-result').textContent = 'Test running…'; await refresh(); }
   catch (e) { message(e.message, true); }
 }
 function appendIndexError(list, error, running = false) {
@@ -357,11 +383,23 @@ async function skipInitialIndex() {
   } catch (e) { message(e.message, true); }
 }
 function dashboardPath(page) { return page === 'overview' ? '/dashboard' : '/dashboard/' + page; }
+function goIndexPage(page, push = false) {
+  const chosen = page === 'model' ? 'model' : 'run';
+  const path = chosen === 'model' ? '/dashboard/indexing/model' : '/dashboard/indexing';
+  if (push && location.pathname !== path) history.pushState({}, '', path);
+  for (const panel of document.querySelectorAll('.index-pane')) panel.classList.toggle('hidden', panel.dataset.indexPage !== chosen);
+  for (const link of document.querySelectorAll('[data-index-nav]')) {
+    const active = link.dataset.indexNav === chosen;
+    link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+  }
+}
 function goDashboardPage(page, push = false) {
   const chosen = dashboardPages.includes(page) ? page : 'overview';
   if (push && location.pathname !== dashboardPath(chosen)) history.pushState({}, '', dashboardPath(chosen));
   for (const panel of document.querySelectorAll('.dashboard-panel')) panel.classList.toggle('active', panel.dataset.page === chosen);
   for (const link of document.querySelectorAll('[data-nav-page]')) link.classList.toggle('active', link.dataset.navPage === chosen);
+  if (chosen === 'indexing') goIndexPage(location.pathname === '/dashboard/indexing/model' ? 'model' : 'run');
 }
 function syncRoute(status) {
   if (!status.config.onboarding_complete) {
@@ -372,9 +410,9 @@ function syncRoute(status) {
     showStep(step, false);
     return;
   }
-  const requested = location.pathname === '/dashboard' ? 'overview' : location.pathname.startsWith('/dashboard/') ? location.pathname.slice('/dashboard/'.length) : '';
+  const requested = location.pathname === '/dashboard' ? 'overview' : location.pathname === '/dashboard/indexing/model' ? 'indexing' : location.pathname.startsWith('/dashboard/') ? location.pathname.slice('/dashboard/'.length) : '';
   const page = dashboardPages.includes(requested) ? requested : 'overview';
-  if (location.pathname !== dashboardPath(page)) history.replaceState({}, '', dashboardPath(page));
+  if (location.pathname !== dashboardPath(page) && location.pathname !== '/dashboard/indexing/model') history.replaceState({}, '', dashboardPath(page));
   goDashboardPage(page);
 }
 function renderIndexProgress(s) {
@@ -392,9 +430,10 @@ function renderIndexProgress(s) {
   const stage = endedWithError && progress.stage !== 'failed' ? `${s.index_error_count ? 'Finished with errors' : 'Stopped'} during ${stages[progress.stage] || progress.stage}` : stages[progress.stage] || progress.stage;
   const total = progress.total, count = progress.completed || 0;
   const percent = total > 0 ? Math.min(100, Math.round(count * 100 / total)) : null;
-  const label = percent === null ? stage + '…' : `${stage}: ${count} of ${total} (${percent}%)`;
+  const completed = !s.index_running && s.last_result?.exit_code === 0 && progress.stage === 'complete';
+  const label = completed ? `Completed: ${count}${percent === null ? '' : ` (${percent}%)`}` : percent === null ? stage + '…' : `${stage}: ${count} of ${total} (${percent}%)`;
   $('index-progress-label').textContent = label;
-  bar.classList.remove('hidden');
+  bar.classList.toggle('hidden', !s.index_running || progress.stage === 'complete');
   bar.classList.toggle('failed', progress.stage === 'failed' || endedWithError);
   if (percent === null) bar.removeAttribute('value'); else bar.value = percent;
   if (s.index_running) {
@@ -483,6 +522,8 @@ async function refresh() {
     const syncDetail = s.agent_last_sync_at ? ` · Last sync: ${new Date(s.agent_last_sync_at * 1000).toLocaleString('en-GB')}` : '';
     $('agent-status').textContent = s.config.source_mode === 'host_agent' ? syncState + syncDetail : '';
     $('index-state').textContent = s.index_running ? 'Indexing in progress…' : s.config.initial_index_skipped && (!s.last_result || s.last_result.dry_run) ? 'Initial indexing has not run yet.' : s.last_result ? `${s.last_result.dry_run ? 'Dry run' : 'Indexing'} ${s.last_result.exit_code === 0 ? 'completed' : s.index_error_count ? 'finished with document errors' : 'failed'} · ${new Date(s.last_result.finished_at * 1000).toLocaleString('en-GB')}` : 'No run recorded.';
+    $('index-summary').classList.toggle('completed', !s.index_running && s.last_result?.exit_code === 0 && !(s.config.initial_index_skipped && s.last_result.dry_run));
+    $('index-summary').classList.toggle('failed', !s.index_running && s.last_result && s.last_result.exit_code !== 0);
     const initialIndexFailed = s.config.setup_step < 7 && !s.index_running && s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0;
     $('overview-state').textContent = s.index_running ? 'Indexing is in progress.' : initialIndexFailed ? 'Initial indexing failed. Open Indexing to review the log and retry.' : s.config.initial_index_skipped ? 'Initial indexing was postponed. Your documents will be searchable after you run it.' : '';
     $('overview-state').classList.toggle('hidden', !$('overview-state').textContent);
@@ -490,6 +531,7 @@ async function refresh() {
     $('index-open-dashboard').classList.toggle('hidden', s.config.setup_step >= 7);
     $('log').textContent = s.log || 'No run yet.'; $('setup-log').textContent = s.log || 'No run yet.';
     $('dry').disabled = s.index_running; $('run').disabled = s.index_running || !s.qdrant_ready || !s.source_ready;
+    $('rebuild').disabled = $('run').disabled;
     $('run').textContent = s.config.active_embedding_model && s.config.active_embedding_model !== s.config.embedding_model ? 'Index with selected model' : s.last_result && !s.last_result.dry_run && s.last_result.exit_code !== 0 ? 'Retry incremental update' : s.config.initial_index_skipped ? 'Start initial indexing' : 'Run incremental update';
     document.querySelectorAll('[data-qdrant]').forEach(x => x.disabled = !s.qdrant_managed);
     $('dashboard-qdrant-start').classList.toggle('hidden', s.qdrant_ready || !s.qdrant_managed);
@@ -538,6 +580,8 @@ if (typeof window !== 'undefined') {
       else message('Complete the previous setup step first.', true);
       return;
     }
+    const indexLink = event.target.closest?.('[data-index-nav]');
+    if (indexLink) { event.preventDefault(); goIndexPage(indexLink.dataset.indexNav, true); return; }
     const link = event.target.closest?.('[data-nav-page]');
     if (!link) return;
     event.preventDefault(); goDashboardPage(link.dataset.navPage, true);

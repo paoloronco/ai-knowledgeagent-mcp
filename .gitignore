@@ -138,6 +138,7 @@ htmlcov/
 .coverage
 .pytest_cache/
 .playwright-cli/
+/output/playwright/
 .nox/
 
 # =============================================================================
@@ -216,6 +217,7 @@ temp/
 *.tmp.*
 *.bak
 *.swp
+*.sync-conflict-*
 
 # =============================================================================
 # Credential Patterns (git-secrets should catch these)

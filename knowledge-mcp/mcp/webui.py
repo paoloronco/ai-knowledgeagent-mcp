@@ -12,9 +12,12 @@ import signal
 import socket
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -24,6 +27,7 @@ from host_sync import allowed_file, host_root, is_office_lock_file, relative_pat
 from embedding_models import DEFAULT_MODEL, MODELS
 from gpu_probe import GPU_MONITOR
 from policy_defaults import ensure_required_exclusions, remove_legacy_default_exclusions
+from backup import MAX_UNPACKED_SIZE, create_backup, stage_restore, apply_restore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +46,7 @@ HTML = Path(__file__).with_name("webui.html")
 SCRIPT = Path(__file__).with_name("app.js")
 TOKEN = secrets.token_urlsafe(32)
 SETUP_PATHS = ("/setup/login", "/setup/health", "/setup/folders", "/setup/policy", "/setup/eligible", "/setup/dry-run", "/setup/indexing")
-DASHBOARD_PATHS = ("/dashboard", "/dashboard/indexing", "/dashboard/folders", "/dashboard/policy", "/dashboard/access")
+DASHBOARD_PATHS = ("/dashboard", "/dashboard/indexing", "/dashboard/indexing/model", "/dashboard/folders", "/dashboard/policy", "/dashboard/access")
 
 
 def validate_source_root(value):
@@ -215,10 +219,13 @@ class Controller:
         self.probe_serial = 0
         self.agent_manifest = json.loads(AGENT_MANIFEST.read_text(encoding="utf-8")) if AGENT_MANIFEST.exists() else {"revision": -1, "files": {}}
         self.stopping = False
+        self.restart_requested = False
+        self.backup_download = None
         self.qdrant = None
         self.mcp = None
         self.ingest = None
         self.ingest_dry_run = False
+        self.ingest_rebuild = False
         self.ingest_model = None
         self.ingest_finalized = False
         result_file = DATA / "last-result.json"
@@ -235,6 +242,99 @@ class Controller:
         tmp = CONFIG.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.config), encoding="utf-8")
         tmp.replace(CONFIG)
+
+    def backup_roots(self):
+        if not Path("/qdrant/qdrant").is_file():
+            raise ValueError("Backup requires the bundled Docker Qdrant service")
+        if os.getenv("QDRANT_URL", "http://127.0.0.1:6333").rstrip("/") != "http://127.0.0.1:6333":
+            raise ValueError("Backup does not support external Qdrant")
+        if os.getenv("QDRANT__STORAGE__STORAGE_PATH", "/qdrant/storage") != "/qdrant/storage":
+            raise ValueError("Backup requires the standard Qdrant storage path")
+        return {"data": DATA, "qdrant": Path("/qdrant/storage"), "agent": AUTO_AGENT_CONFIG.parent} if AUTO_AGENT_CONFIG else {"data": DATA, "qdrant": Path("/qdrant/storage")}
+
+    def qdrant_backup_version(self):
+        return subprocess.check_output(["/qdrant/qdrant", "--version"], text=True, timeout=5).strip()
+
+    def discard_backup_download(self):
+        if self.backup_download:
+            self.backup_download[1].unlink(missing_ok=True)
+            self.backup_download = None
+
+    def validate_backup_settings(self, stages):
+        data = stages["data"]
+        if (data / "config.json").stat().st_size > 1024 * 1024 or (data / "index-policy.yaml").stat().st_size > 1024 * 1024:
+            raise ValueError("Backup settings are too large")
+        restored = json.loads((data / "config.json").read_text(encoding="utf-8"))
+        if not isinstance(restored, dict):
+            raise ValueError("Backup settings must be an object")
+        for key, value in self.config.items():
+            actual = restored.get(key)
+            if key == "active_embedding_model":
+                valid = actual is None or isinstance(actual, str)
+            elif type(value) in (int, float):
+                valid = type(actual) in (int, float) and math.isfinite(actual)
+            else:
+                valid = value is None or type(actual) is type(value)
+            if key not in restored or not valid:
+                raise ValueError(f"Incompatible backup setting: {key}")
+        for key in ("embedding_model", "legacy_embedding_model", "active_embedding_model"):
+            if restored.get(key) not in (*MODELS, "environment", None) or key != "active_embedding_model" and restored.get(key) is None:
+                raise ValueError("Unsupported embedding model in backup")
+        if restored["source_mode"] not in ("container", "host_agent") or restored["source_selection"] not in ("auto", "container", "host_agent") or not 0 <= restored["interval_hours"] <= 720:
+            raise ValueError("Invalid source or schedule in backup")
+        if not isinstance(restored["folders"], list) or len(restored["folders"]) > 32 or not all(isinstance(folder, str) and (folder == "" or relative_path(folder)) for folder in restored["folders"]):
+            raise ValueError("Invalid folders in backup")
+        if any(type(restored[key]) is not int for key in ("sync_revision", "sync_request", "scan_requested_revision", "setup_step", "setup_flow_version")) or not 0 <= restored["setup_step"] <= 7 or restored["setup_flow_version"] != 2 or restored["last_run_at"] < 0:
+            raise ValueError("Invalid indexing state in backup")
+        validate_policy((data / "index-policy.yaml").read_text(encoding="utf-8"))
+        for filename in ("auth.json", "agent-auth.json", "agent-manifest.json", "last-result.json"):
+            path = data / filename
+            if not path.exists():
+                continue
+            if path.stat().st_size > 16 * 1024 * 1024:
+                raise ValueError("Backup metadata is too large")
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError(f"Invalid backup metadata: {filename}")
+            if filename == "auth.json" and any(not isinstance(record.get(key), str) or len(bytes.fromhex(record[key])) != size for key, size in (("salt", 16), ("hash", 32))):
+                raise ValueError("Invalid dashboard credentials in backup")
+            if filename == "agent-manifest.json" and (type(record.get("revision")) is not int or not isinstance(record.get("files"), dict) or not all(isinstance(item, dict) and type(item.get("size")) is int and isinstance(item.get("sha256"), str) for item in record["files"].values())):
+                raise ValueError("Invalid synchronized document inventory in backup")
+            if filename == "last-result.json" and (type(record.get("exit_code")) is not int or type(record.get("dry_run")) is not bool or type(record.get("finished_at")) not in (int, float)):
+                raise ValueError("Invalid indexing result in backup")
+        if "agent" in stages:
+            saved = stages["agent"] / AUTO_AGENT_CONFIG.name
+            if not saved.is_file() or saved.stat().st_size > 4096:
+                raise ValueError("Backup is missing the host agent connection")
+            connection = json.loads(saved.read_text(encoding="utf-8"))
+            if not isinstance(connection, dict) or connection.get("url") != "http://127.0.0.1:8080" or not isinstance(connection.get("token"), str):
+                raise ValueError("Invalid host agent connection in backup")
+            if not (data / "agent-auth.json").is_file():
+                raise ValueError("Backup is missing host agent credentials")
+            expected = json.loads((data / "agent-auth.json").read_text(encoding="utf-8"))
+            if expected.get("sha256") != hashlib.sha256(connection["token"].encode()).hexdigest():
+                raise ValueError("Host agent credentials do not match the backup")
+
+    @contextmanager
+    def backup_pause(self):
+        with self.lock:
+            if self.sync_in_progress or self.local_scan["running"] or self.folder_probe is not None or self.ingest and self.ingest.poll() is None:
+                raise ValueError("Wait until indexing, scanning and folder synchronization finish")
+            if self.ingest and not self.ingest_finalized:
+                self._finish_index(self.ingest, self.ingest_dry_run, self.ingest_model)
+            self._save()
+            qdrant_running = bool(self.qdrant and self.qdrant.poll() is None)
+            mcp_running = bool(self.mcp and self.mcp.poll() is None)
+            try:
+                self._stop_mcp()
+                self._stop_qdrant()
+                yield
+            finally:
+                if not self.stopping:
+                    if qdrant_running:
+                        self._start_qdrant()
+                    if mcp_running:
+                        self._start_mcp()
 
     def password_enabled(self):
         return AUTH.exists()
@@ -764,8 +864,12 @@ class Controller:
                 self._start_mcp()
             return dict(self.config)
 
-    def run_index(self, dry_run=False):
+    def run_index(self, dry_run=False, rebuild=False):
         with self.lock:
+            if dry_run and rebuild:
+                raise ValueError("A rebuild cannot be a dry run")
+            if self.stopping:
+                raise ValueError("Application is restarting")
             if self.ingest and self.ingest.poll() is None:
                 raise ValueError("Indexing is already running")
             if self.config["source_mode"] == "host_agent" and not self.host_source_ready():
@@ -782,10 +886,20 @@ class Controller:
             args = [sys.executable, "ingestion/ingest.py"]
             if dry_run:
                 args += ["--dry-run", "--limit", "10"]
+            if rebuild:
+                args += ["--rebuild"]
             self.ingest_model = self.config["embedding_model"]
-            with (DATA / "ingest.log").open("w", encoding="utf-8") as log:
-                self.ingest = subprocess.Popen(args, cwd=ROOT, env=self._env(self.ingest_model, indexing=True), stdout=log, stderr=subprocess.STDOUT)
+            if rebuild:
+                self._stop_mcp()
+            try:
+                with (DATA / "ingest.log").open("w", encoding="utf-8") as log:
+                    self.ingest = subprocess.Popen(args, cwd=ROOT, env=self._env(self.ingest_model, indexing=True), stdout=log, stderr=subprocess.STDOUT)
+            except OSError:
+                if rebuild and self.config["mcp_enabled"]:
+                    self._start_mcp()
+                raise
             self.ingest_dry_run = dry_run
+            self.ingest_rebuild = rebuild
             self.ingest_finalized = False
             if not dry_run:
                 self.config["last_run_at"] = time.time()
@@ -811,7 +925,7 @@ class Controller:
             tmp = result_file.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.last_result), encoding="utf-8")
             tmp.replace(result_file)
-            if code == 0 and not dry_run and self.config["mcp_enabled"] and not self.stopping:
+            if (code == 0 or self.ingest_rebuild) and not dry_run and self.config["mcp_enabled"] and not self.stopping:
                 self._stop_mcp()
                 self._start_mcp()
 
@@ -819,7 +933,7 @@ class Controller:
         bundled_qdrant = Path("/qdrant/qdrant").exists()
         if self.config["qdrant_enabled"] and bundled_qdrant and (self.qdrant is None or self.qdrant.poll() is not None):
             self._start_qdrant()
-        if self.config["mcp_enabled"] and (not bundled_qdrant or self.config["qdrant_enabled"]) and (self.mcp is None or self.mcp.poll() is not None):
+        if self.config["mcp_enabled"] and (not bundled_qdrant or self.config["qdrant_enabled"]) and (self.mcp is None or self.mcp.poll() is not None) and not (self.ingest and self.ingest.poll() is None):
             self._start_mcp()
 
     def _schedule(self):
@@ -828,6 +942,8 @@ class Controller:
             with self.lock:
                 if self.stopping:
                     return
+                if self.backup_download and self.backup_download[2] < time.time():
+                    self.discard_backup_download()
                 # Docker restarts this container when the Web UI exits. Keep the
                 # separately managed child services running after their own crash.
                 try:
@@ -985,6 +1101,7 @@ class Controller:
     def close(self):
         with self.lock:
             self.stopping = True
+            self.discard_backup_download()
             if self.ingest and self.ingest.poll() is None:
                 self.ingest.terminate()
                 try:
@@ -1034,14 +1151,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def send_download(self, path, filename):
+    def send_download(self, path, filename, kind="text/plain; charset=utf-8"):
         if not path.is_file() or path.is_symlink():
             self.send(404, json.dumps({"error": "This log is not available for the selected run"}))
             return
         with path.open("rb") as source:
             size = os.fstat(source.fileno()).st_size
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(size))
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Cache-Control", "no-store")
@@ -1088,7 +1205,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authenticated():
             self.send(401, json.dumps({"error": "Login required"}))
             return
-        if self.path == "/api/status":
+        if urlsplit(self.path).path == "/api/backup/download":
+            key = parse_qs(urlsplit(self.path).query).get("id", [""])[0]
+            with controller.lock:
+                pending = controller.backup_download
+                if not pending or not hmac.compare_digest(pending[0], key) or pending[2] < time.time():
+                    self.send(404, json.dumps({"error": "Backup download has expired; create a new backup"}))
+                    return
+                controller.backup_download = None
+            try:
+                self.send_download(pending[1], "knowledge-mcp-backup.tar.gz", "application/gzip")
+            finally:
+                pending[1].unlink(missing_ok=True)
+        elif self.path == "/api/status":
             self.send(200, json.dumps(controller.status()))
         elif self.path == "/api/index/errors":
             entries, origin = controller.index_errors()
@@ -1128,6 +1257,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, json.dumps({"error": "Not found"}))
 
     def do_POST(self):
+        if not self._allowed_host():
+            self.send(403, json.dumps({"error": "Unauthorized request"}))
+            return
+        route = urlsplit(self.path).path
+        agent = route.startswith("/api/agent/") and route not in ("/api/agent/pair", "/api/agent/refresh")
+        if route != "/api/login" and (not controller.agent_authenticated(self.headers.get("X-Agent-Token")) if agent else not self._authenticated() or self.headers.get("X-Control-Token") != TOKEN):
+            self.send(403, json.dumps({"error": "Unauthorized request"}))
+            return
+        self.connection.settimeout(30)
+        # ponytail: serialize mutations during backup; use a maintenance gate if uploads need concurrency.
+        with controller.lock:
+            if controller.stopping:
+                self.send(503, json.dumps({"error": "Application is restarting"}))
+                return
+            self._post()
+
+    def _post(self):
         if not self._allowed_host():
             self.send(403, json.dumps({"error": "Unauthorized request"}))
             return
@@ -1189,6 +1335,54 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authenticated() or self.headers.get("X-Control-Token") != TOKEN:
                 self.send(403, json.dumps({"error": "Unauthorized request"}))
                 return
+            if route.path in ("/api/backup", "/api/restore"):
+                roots = controller.backup_roots()
+                version = controller.qdrant_backup_version()
+                if route.path == "/api/backup":
+                    descriptor, filename = tempfile.mkstemp(prefix="knowledge-backup-", suffix=".tar.gz")
+                    os.close(descriptor)
+                    archive = Path(filename)
+                    try:
+                        with controller.backup_pause():
+                            create_backup(archive, roots, version)
+                        controller.discard_backup_download()
+                        key = secrets.token_urlsafe(32)
+                        controller.backup_download = (key, archive, time.time() + 600)
+                        self.send(200, json.dumps({"url": "/api/backup/download?id=" + key}))
+                    except Exception:
+                        if controller.backup_download and controller.backup_download[1] == archive:
+                            controller.backup_download = None
+                        archive.unlink(missing_ok=True)
+                        raise
+                    return
+                with tempfile.TemporaryDirectory(prefix="knowledge-backup-") as folder:
+                    archive = Path(folder) / "backup.tar.gz"
+                    if route.path == "/api/restore":
+                        if not 0 < length <= MAX_UNPACKED_SIZE:
+                            raise ValueError("Backup upload is too large or empty")
+                        remaining = length
+                        with archive.open("wb") as output:
+                            while remaining:
+                                chunk = self.rfile.read(min(1024 * 1024, remaining))
+                                if not chunk:
+                                    raise ValueError("Incomplete backup upload")
+                                output.write(chunk)
+                                remaining -= len(chunk)
+                        stages = stage_restore(archive, roots, version)
+                        try:
+                            controller.validate_backup_settings(stages)
+                            with controller.backup_pause():
+                                apply_restore(stages, roots)
+                                controller.stopping = True
+                                controller.restart_requested = True
+                        finally:
+                            for stage in stages.values():
+                                shutil.rmtree(stage, ignore_errors=True)
+                        try:
+                            self.send(200, json.dumps({"restored": True, "restarting": True}))
+                        finally:
+                            threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             if route.path == "/api/logout":
                 cookie = self.headers.get("Cookie", "")
                 session = next((part.split("=", 1)[1] for part in cookie.split("; ") if part.startswith("knowledge_session=")), "")
@@ -1237,7 +1431,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/service":
                 result = controller.service(values.get("name"), values.get("action"))
             elif self.path == "/api/index":
-                controller.run_index(values.get("dry_run") is True)
+                controller.run_index(values.get("dry_run") is True, rebuild=values.get("rebuild") is True)
                 result = {"started": True}
             elif self.path == "/api/policy":
                 content = values.get("content")
@@ -1266,7 +1460,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(404, json.dumps({"error": "Not found"}))
                 return
             self.send(200, json.dumps(result))
-        except (ValueError, yaml.YAMLError) as exc:
+        except (ValueError, yaml.YAMLError, tarfile.TarError, EOFError) as exc:
             self.send(400, json.dumps({"error": str(exc)}))
         except Exception:
             self.send(500, json.dumps({"error": "Internal error; check the container logs"}))
@@ -1288,6 +1482,8 @@ def main():
     finally:
         controller.close()
         server.server_close()
+    if controller.restart_requested:
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())])
 
 
 if __name__ == "__main__":

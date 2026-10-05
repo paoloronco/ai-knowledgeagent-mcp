@@ -24,6 +24,8 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
   const makeClassList = () => ({classes: new Set(), toggle(name, force) { if (force) this.classes.add(name); else this.classes.delete(name); }, contains(name) { return this.classes.has(name); }});
   const panels = [...html.matchAll(/class="card dashboard-panel" data-page="([^"]+)"/g)].map(([, page]) => ({dataset: {page}, classList: makeClassList()}));
   const links = [...html.matchAll(/data-nav-page="([^"]+)"/g)].map(([, navPage]) => ({dataset: {navPage}, classList: makeClassList()}));
+  const indexPanels = [...html.matchAll(/data-index-page="([^"]+)"/g)].map(([, indexPage]) => ({dataset: {indexPage}, classList: makeClassList()}));
+  const indexLinks = [...html.matchAll(/data-index-nav="([^"]+)"/g)].map(([, indexNav]) => ({dataset: {indexNav}, classList: makeClassList(), attributes: {}, setAttribute(key, value) { this.attributes[key] = value; }, removeAttribute(key) { delete this.attributes[key]; }}));
   const steps = [...html.matchAll(/class="step" data-step="([^"]+)"/g)].map(([, step]) => ({dataset: {step}, classList: makeClassList()}));
   const initialRoot = config.source_mode === 'host_agent' ? config.host_root : config.source_root;
   const status = {config: {sync_request: 0, ...config}, source_root: config.source_root, agent_connected: connected, agent_paired: connected, agent_managed: true,
@@ -32,7 +34,7 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
     document_paths: initialRoot ? [initialRoot] : []};
   const location = {pathname};
   const context = vm.createContext({
-    document: {getElementById: id => elements[id] || null, querySelectorAll: selector => selector === '.dashboard-panel' ? panels : selector === '[data-nav-page]' ? links : selector === '.step' ? steps : [],
+    document: {getElementById: id => elements[id] || null, querySelectorAll: selector => selector === '.dashboard-panel' ? panels : selector === '[data-nav-page]' ? links : selector === '.index-pane' ? indexPanels : selector === '[data-index-nav]' ? indexLinks : selector === '.step' ? steps : [],
       createElement: () => ({className: '', textContent: '', children: [], append(...nodes) { this.children.push(...nodes); }, setAttribute() {}}), activeElement: null},
     token: 'test-control-token', Date, clearTimeout() {}, location, history: {pushState(_, __, url) { location.pathname = url; }, replaceState(_, __, url) { location.pathname = url; }},
     setTimeout(callback, delay) { if (delay === 2000) callback(); },
@@ -68,10 +70,88 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
   vm.runInContext(script, context);
   context.initial = status;
   vm.runInContext('current = initial; wizardStep = 2; fillSourceInputs();', context);
-  return {elements, calls, context, status, panels, links, steps, location};
+  return {elements, calls, context, status, panels, links, indexPanels, indexLinks, steps, location};
 }
 
 const legacy = {source_selection: 'auto', source_mode: 'host_agent', source_root: '/data/host-documents', host_root: '', setup_step: 2, folders: []};
+
+test('Indexing has separate model and run pages with stable direct links', async () => {
+  const {context, indexPanels, indexLinks, location} = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
+  await vm.runInContext('refresh()', context);
+  assert.equal(indexPanels.find(p => p.dataset.indexPage === 'model').classList.contains('hidden'), true);
+  assert.equal(indexPanels.find(p => p.dataset.indexPage === 'run').classList.contains('hidden'), false);
+  vm.runInContext("goIndexPage('model', true)", context);
+  await vm.runInContext('refresh()', context);
+  assert.equal(location.pathname, '/dashboard/indexing/model');
+  assert.equal(indexPanels.find(p => p.dataset.indexPage === 'run').classList.contains('hidden'), true);
+  assert.equal(indexLinks.find(p => p.dataset.indexNav === 'model').attributes['aria-current'], 'page');
+  vm.runInContext("goIndexPage('run', true)", context);
+  assert.equal(location.pathname, '/dashboard/indexing');
+  const direct = dashboard({...legacy, onboarding_complete: true, setup_step: 7}, false, '/dashboard/indexing/model');
+  await vm.runInContext('refresh()', direct.context);
+  assert.equal(direct.location.pathname, '/dashboard/indexing/model');
+  assert.equal(direct.indexPanels.find(p => p.dataset.indexPage === 'model').classList.contains('hidden'), false);
+});
+
+test('completed indexing displays date and count together and hides the full progress bar', async () => {
+  const {elements, context, status} = dashboard({...legacy, onboarding_complete: true, setup_step: 7});
+  status.last_result = {dry_run: false, exit_code: 0, finished_at: 1791142471};
+  status.index_progress = {stage: 'complete', completed: 4917, total: 4917};
+  status.index_running = false;
+  await vm.runInContext('refresh()', context);
+  assert.match(elements['index-state'].textContent, /^Indexing completed · /);
+  assert.equal(elements['index-progress-label'].textContent, 'Completed: 4917 (100%)');
+  assert.equal(elements['index-summary'].classList.contains('completed'), true);
+  assert.equal(elements['index-progress'].classList.contains('hidden'), true);
+  status.index_running = true;
+  status.index_progress = {stage: 'indexing', completed: 100, total: 4917};
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['index-progress'].classList.contains('hidden'), false);
+  assert.equal(elements['index-summary'].classList.contains('completed'), false);
+  assert.match(elements['index-progress-label'].textContent, /Indexing documents: 100 of 4917/);
+});
+
+test('rebuild requires confirmation and uses the selected model indexing endpoint', async () => {
+  const {elements, context, calls, status} = dashboard({...legacy, onboarding_complete: true, setup_step: 7}, true);
+  status.qdrant_ready = true;
+  context.confirm = () => false;
+  await vm.runInContext('runIndex(false, true)', context);
+  assert.equal(calls.some(c => c.route === '/api/index'), false);
+  context.confirm = () => true;
+  await vm.runInContext('runIndex(false, true)', context);
+  assert.equal(calls.find(c => c.route === '/api/index').body.rebuild, true);
+  status.index_running = true;
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements.rebuild.disabled, true);
+  assert.equal(elements.run.disabled, true);
+});
+
+test('backup downloads an archive and restore requires confirmation before upload', async () => {
+  const {elements, context} = dashboard(legacy);
+  const requests = [], file = {name: 'backup.tar.gz'};
+  let clicked = false;
+  context.document.createElement = () => ({click() { clicked = true; }});
+  context.fetch = async (route, options) => {
+    requests.push({route, options});
+    return {ok: true, json: async () => ({url: '/api/backup/download?id=one-use-key', restored: true, restarting: true})};
+  };
+  await vm.runInContext('downloadBackup()', context);
+  assert.equal(clicked, true);
+  assert.equal(requests[0].route, '/api/backup');
+  assert.equal(requests[0].options.headers['X-Control-Token'], 'test-control-token');
+  assert.doesNotMatch(script, /response\.blob\(\)/);
+  assert.doesNotMatch(html, /<h3>NVIDIA GPU<\/h3>/);
+  assert.equal(elements['backup-download'].disabled, false);
+  elements['backup-file'].files = [file];
+  context.confirm = () => false;
+  await vm.runInContext('restoreBackup()', context);
+  assert.equal(requests.length, 1);
+  context.confirm = () => true;
+  await vm.runInContext('restoreBackup()', context);
+  assert.equal(requests[1].route, '/api/restore');
+  assert.equal(requests[1].options.body, file);
+  assert.match(elements['backup-status'].textContent, /restarting/);
+});
 
 test('model choice shows hardware guidance and keeps active search until indexing', async () => {
   const {elements, calls, context, status} = dashboard({...legacy, embedding_model: 'e5-small', active_embedding_model: 'e5-small', onboarding_complete: true, setup_step: 7});
@@ -125,9 +205,9 @@ test('GPU status cards distinguish acceleration, CPU fallback and unavailable CU
 
 test('indexing guidance is concise with technical details in accessible tooltips', () => {
   assert.match(html, /Choose the model that fits your documents and hardware/);
-  assert.match(html, /Incremental updates process only changes/);
+  assert.doesNotMatch(html, /Incremental updates process only changes/);
   assert.match(html, /aria-describedby="model-help"/);
-  assert.match(html, /aria-describedby="index-help"/);
+  assert.match(html, /<button id="run"[^>]*aria-describedby="index-help"/);
   assert.match(html, /\.info-tip:hover \.info-popover,\.info-tip:focus-within \.info-popover/);
   assert.equal(html.includes('Each run compares file hashes.'), false);
 });

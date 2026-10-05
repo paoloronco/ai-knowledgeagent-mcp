@@ -65,6 +65,11 @@ jobs:
           file: ./knowledge-mcp/Dockerfile
           load: true
           tags: knowledge-mcp:smoke
+      - name: Verify backup and restore with bundled Qdrant
+        run: |
+          docker run --rm --entrypoint python -v "$GITHUB_WORKSPACE:/tests:ro" \
+            knowledge-mcp:smoke \
+            -m unittest discover -s /tests/tests -p test_backup.py -k real_qdrant -q
       - name: Verify automatic Docker host access, Web UI and Qdrant
         run: |
           mkdir -p "$RUNNER_TEMP/knowledge-smoke-docs"
