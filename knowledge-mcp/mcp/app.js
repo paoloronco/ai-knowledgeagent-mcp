@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 let current = null, policy = null, wizardStep = 0, authRequired = false, folderPaths = [], eligibleFiles = [];
 let messageTimer = null, refreshError = null;
 let modelRenderKey = '';
-const setupLabels = ['Settings', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
+const setupLabels = ['Dashboard login', 'Service health', 'Document folders', 'Indexing policy', 'Eligible documents', 'Dry-run test', 'Initial indexing'];
 const setupPaths = ['/setup/login', '/setup/health', '/setup/folders', '/setup/policy', '/setup/eligible', '/setup/dry-run', '/setup/indexing'];
 const dashboardPages = ['overview', 'indexing', 'folders', 'policy', 'settings'];
 
@@ -192,27 +192,27 @@ async function login() {
   } catch (e) { message(e.message, true); }
 }
 async function logout() { try { await api('/api/logout', {}); location.reload(); } catch (e) { message(e.message, true); } }
-function toggleSetupPassword() { $('login-password-fields').classList.toggle('hidden', !$('login-enabled').checked); }
+function toggleSetupPassword() {
+  const enabled = $('login-enabled').checked;
+  $('login-password-fields').classList.toggle('hidden', !enabled);
+  $('setup-login-next').textContent = enabled ? 'Continue with login' : 'Continue without login';
+  $('setup-password-note').textContent = authRequired ? 'Leave empty to keep the current password.' : '';
+}
 async function setupSecurity() {
   try {
     if ($('login-enabled').checked) {
       const password = $('setup-password').value;
-      if (!authRequired || password) {
-        await api('/api/security', {enabled: true, password});
-        history.replaceState({}, '', setupPaths[1]);
-        location.reload(); return;
-      }
-    } else if (authRequired) {
+      if (authRequired && !password) { await nextStep(); return; }
+      await api('/api/security', {enabled: true, password});
+    } else {
       await api('/api/security', {enabled: false});
-      await api('/api/onboarding/progress', {step: 1});
-      history.replaceState({}, '', setupPaths[1]);
-      location.reload(); return;
     }
-    await nextStep();
+    history.replaceState({}, '', setupPaths[1]);
+    location.reload();
   } catch (e) { message(e.message, true); }
 }
 async function setPassword() { try { await api('/api/security', {enabled: true, password: $('new-password').value}); location.reload(); } catch (e) { message(e.message, true); } }
-async function disablePassword() { try { await api('/api/security', {enabled: false}); location.reload(); } catch (e) { message(e.message, true); } }
+async function disablePassword() { try { await api('/api/security', {enabled: false}); if (!current.config.onboarding_complete) history.replaceState({}, '', '/'); location.reload(); } catch (e) { message(e.message, true); } }
 
 const extensions = ['.pdf', '.docx', '.pptx', '.md', '.txt', '.html', '.htm'];
 function policyWidget(id) {
@@ -564,6 +564,7 @@ async function start() {
     $('auth-state').textContent = auth.required ? 'Login enabled' : 'Login disabled';
     current = await api('/api/status');
     $('login-enabled').checked = auth.required;
+    $('login-disabled').checked = !auth.required;
     toggleSetupPassword();
     fillSourceInputs();
     $('interval').value = current.config.interval_hours;

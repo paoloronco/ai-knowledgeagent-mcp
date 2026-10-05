@@ -193,6 +193,10 @@ class AdminBoundaryTest(unittest.TestCase):
                             request = urllib.request.Request(url + route, data=json.dumps(body).encode(), headers=headers)
                             return urllib.request.urlopen(request)
 
+                        with post("/api/security", {"enabled": False}) as response:
+                            self.assertFalse(json.load(response)["enabled"])
+                        self.assertEqual(controller.config["setup_step"], 1)
+                        self.assertEqual(json.loads(app.CONFIG.read_text())["setup_step"], 1)
                         with post("/api/config", {"document_root": "/mnt/documents", "source_selection": "auto", "folders": [""]}) as response:
                             self.assertEqual(json.load(response)["host_root"], "/mnt/documents")
                         with post("/api/agent/pair", {}) as response:
@@ -207,6 +211,10 @@ class AdminBoundaryTest(unittest.TestCase):
                             pass
                         self.assertFalse(controller.password_enabled())
                         self.assertEqual(controller.config["host_root"], "/mnt/documents")
+                        controller.config.update(onboarding_complete=True, setup_step=7)
+                        with post("/api/security", {"enabled": False}):
+                            pass
+                        self.assertEqual(controller.config["setup_step"], 7)
                     finally:
                         server.shutdown()
                         server.server_close()

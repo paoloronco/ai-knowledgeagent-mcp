@@ -128,7 +128,7 @@ See [Docker deployment notes](docs/docker.md) for volume mappings, updates, and 
 
 ### First setup
 
-1. Open `http://HOST_IP:8080` and choose whether to enable dashboard login.
+1. Open `http://HOST_IP:8080`. Choose **Continue without login** or **Require a password**, then continue. You can change this later in Settings.
 2. Add your document folders. With the companion, use paths on the Linux host, such as `/mnt/documents`.
 3. Review the indexing policy: file types, size limits, and excluded paths.
 4. Run **Scan** to check eligible files, then the **Dry-run test** to check document parsing.

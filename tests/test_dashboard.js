@@ -32,7 +32,7 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
     source_ready: connected || config.source_mode === 'container', agent_file_count: 2, agent_sync_request_completed: 1,
     scan_complete: false, scan_ready: false, scan_running: false, scan_checked: 0, scan_eligible_count: 0, scan_eligible_preview: [],
     document_paths: initialRoot ? [initialRoot] : []};
-  const location = {pathname};
+  const location = {pathname, reloads: 0, reload() { this.reloads++; }};
   const context = vm.createContext({
     document: {getElementById: id => elements[id] || null, querySelectorAll: selector => selector === '.dashboard-panel' ? panels : selector === '[data-nav-page]' ? links : selector === '.index-pane' ? indexPanels : selector === '[data-index-nav]' ? indexLinks : selector === '.step' ? steps : [],
       createElement: () => ({className: '', textContent: '', children: [], append(...nodes) { this.children.push(...nodes); }, setAttribute() {}}), activeElement: null},
@@ -51,6 +51,9 @@ function dashboard(config, connected = false, pathname = '/dashboard/indexing') 
       } else if (route === '/api/embedding-model') {
         status.config = {...status.config, embedding_model: body.model};
         result = status.config;
+      } else if (route === '/api/security') {
+        status.config.setup_step = Math.max(1, status.config.setup_step);
+        result = {enabled: body.enabled};
       } else if (route === '/api/status') result = status;
       else if (route === '/api/policy') result = body ? {saved: true} : {policy: {exclude_files: []}, content: 'exclude_files: []'};
       else if (route === '/api/folder/check') result = {reachable: true, mode: 'host_agent'};
@@ -356,14 +359,34 @@ test('Service health shows Start Qdrant only while managed Qdrant is unavailable
   assert.equal(elements['dashboard-qdrant-start'].classList.contains('hidden'), true);
 });
 
-test('onboarding continues with dashboard login disabled', async () => {
-  const {elements, calls, context} = dashboard({...legacy, setup_step: 0});
-  elements['login-enabled'].checked = false;
-  vm.runInContext('wizardStep = 0', context);
+test('continuing without login saves the choice and survives a reload from setup or Settings', async () => {
+  for (const [action, required] of [['setupSecurity', false], ['setupSecurity', true], ['disablePassword', true]]) {
+    const {elements, calls, context, location, steps} = dashboard({...legacy, setup_step: 0}, false, '/setup/login');
+    elements['login-enabled'].checked = false;
+    vm.runInContext(`wizardStep = 0; authRequired = ${required}`, context);
+    await vm.runInContext(`${action}()`, context);
+    assert.deepEqual(calls.find(x => x.route === '/api/security').body, {enabled: false});
+    assert.equal(location.reloads, 1);
+    await vm.runInContext('refresh()', context);
+    assert.equal(location.pathname, '/setup/health');
+    assert.equal(steps.find(x => x.classList.contains('active')).dataset.step, '1');
+  }
+  for (const [complete, step, target] of [[true, 7, '/dashboard/settings'], [false, 3, '/setup/policy']]) {
+    const {context, location} = dashboard({...legacy, onboarding_complete: complete, setup_step: step}, false, '/dashboard/settings');
+    await vm.runInContext('disablePassword();', context);
+    await vm.runInContext('refresh()', context);
+    assert.equal(location.pathname, target);
+  }
+  assert.doesNotMatch(html, /Enable login to select folders on the Docker host/);
+});
+
+test('an existing dashboard password can be kept without entering another password', async () => {
+  const {elements, calls, context, location} = dashboard({...legacy, setup_step: 0}, false, '/setup/login');
+  elements['login-enabled'].checked = true;
+  vm.runInContext('wizardStep = 0; authRequired = true', context);
   await vm.runInContext('setupSecurity()', context);
   assert.equal(calls.some(x => x.route === '/api/security'), false);
-  assert.equal(calls.find(x => x.route === '/api/onboarding/progress').body.step, 1);
-  assert.doesNotMatch(html, /Enable login to select folders on the Docker host/);
+  assert.equal(location.pathname, '/setup/health');
 });
 
 test('password field is shown only when login is enabled', () => {
@@ -371,9 +394,11 @@ test('password field is shown only when login is enabled', () => {
   elements['login-enabled'].checked = false;
   vm.runInContext('toggleSetupPassword()', context);
   assert.equal(elements['login-password-fields'].classList.contains('hidden'), true);
+  assert.equal(elements['setup-login-next'].textContent, 'Continue without login');
   elements['login-enabled'].checked = true;
   vm.runInContext('toggleSetupPassword()', context);
   assert.equal(elements['login-password-fields'].classList.contains('hidden'), false);
+  assert.equal(elements['setup-login-next'].textContent, 'Continue with login');
 });
 
 test('successful dry run enables Continue to indexing', async () => {

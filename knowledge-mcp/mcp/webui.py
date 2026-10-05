@@ -1417,6 +1417,7 @@ class Handler(BaseHTTPRequestHandler):
                     AUTH.unlink(missing_ok=True)
                     with controller.lock:
                         controller.sessions.clear()
+                        controller.advance_setup(1)
                 else:
                     raise ValueError("Invalid security setting")
                 result = {"enabled": controller.password_enabled()}
